@@ -1,33 +1,154 @@
-# One-Last-Heist
+﻿# One Last Heist
 
-A [libGDX](https://libgdx.com/) project generated with [gdx-liftoff](https://github.com/libgdx/gdx-liftoff).
+One Last Heist is a work-in-progress Java/LibGDX OOP project. The goal is to build a 2D top-down stealth, adventure, and puzzle game where the player breaks into a mysterious house, collects valuables, avoids traps, hides from danger, and can discover a hidden route with a secret ending.
 
-This project was generated with a template including simple application launchers and a main class extending `Game` that sets the first screen.
+## Project Status
 
-## Platforms
+WIP. The project currently has:
 
-- `core`: Main module with the application logic shared by all platforms.
-- `lwjgl3`: Primary desktop platform using LWJGL3; was called 'desktop' in older docs.
+- LibGDX multi-module setup with `core` and `lwjgl3`
+- Desktop launcher using LWJGL3
+- Main game entry class: `OneLastHeistGame`
+- Main menu screen with background and image buttons
+- Credits popup with custom themed UI
+- Basic screen navigation structure
+- Initial OOP package structure for gameplay systems
 
-## Gradle
+## Current Entry Flow
 
-This project uses [Gradle](https://gradle.org/) to manage dependencies.
-The Gradle wrapper was included, so you can run Gradle tasks using `gradlew.bat` or `./gradlew` commands.
-Useful Gradle tasks and flags:
+```text
+lwjgl3 launcher
+  -> com.onelastheist.game.OneLastHeistGame
+  -> GameContext
+  -> ScreenNavigator
+  -> MainMenuScreen
+```
 
-- `--continue`: when using this flag, errors will not stop the tasks from running.
-- `--daemon`: thanks to this flag, Gradle daemon will be used to run chosen tasks.
-- `--offline`: when using this flag, cached dependency archives will be used.
-- `--refresh-dependencies`: this flag forces validation of all dependencies. Useful for snapshot versions.
-- `build`: builds sources and archives of every project.
-- `cleanEclipse`: removes Eclipse project data.
-- `cleanIdea`: removes IntelliJ project data.
-- `clean`: removes `build` folders, which store compiled classes and built archives.
-- `eclipse`: generates Eclipse project data.
-- `idea`: generates IntelliJ project data.
-- `lwjgl3:jar`: builds application's runnable jar, which can be found at `lwjgl3/build/libs`.
-- `lwjgl3:run`: starts the application.
-- `test`: runs unit tests (if any).
+## Folder Structure
 
-Note that most tasks that are not specific to a single project can be run with `name:` prefix, where the `name` should be replaced with the ID of a specific project.
-For example, `core:clean` removes `build` folder only from the `core` project.
+```text
+core/src/main/java/com/onelastheist/game/
+  OneLastHeistGame.java
+  app/
+  config/
+  screen/
+  world/
+  map/
+  entity/
+  interaction/
+  item/
+  environment/
+  trap/
+  ai/
+  quest/
+  ending/
+  ui/
+  render/
+  audio/
+  save/
+
+lwjgl3/src/main/java/com/onelastheist/game/lwjgl3/
+  Lwjgl3Launcher.java
+  StartupHelper.java
+
+assets/
+  start_screen/
+```
+
+## Implemented So Far
+
+### Main Menu
+
+- Full-screen start background from `assets/start_screen/bg_main_menu.png`
+- Play, Credits, and Exit buttons using normal, hover, and pressed images
+- Play button opens the current placeholder play screen
+- Credits button opens the credits popup
+s
+
+## Planned Gameplay
+
+The full game design is still WIP. Planned features include:
+
+- Top-down player movement
+- Six connected main house rooms
+- Three hidden-route rooms or an equivalent hidden-route sequence
+- Money, keys, weapons, and evidence items
+- Inventory system
+- Locked doors and safes
+- Trap reveal and alarm behavior
+- Hiding spots
+- Homeowner search behavior
+- Dog/noise danger system
+- Main map timer
+- Hidden route without timer pressure
+- Final confrontation
+- Four endings:
+  - Normal escape
+  - Caught or time over
+  - Hidden route failure
+  - True ending
+
+## Controls Plan
+
+Current planned controls:
+
+```text
+W - Move up
+A - Move left
+S - Move down
+D - Move right
+E - Hide or interact with hiding spot
+F - Collect or interact with objects
+Left mouse button - Use selected item
+```
+
+## How To Run
+
+From the project root:
+
+```powershell
+.\gradlew.bat :lwjgl3:run
+```
+
+## How To Build
+
+```powershell
+.\gradlew.bat build
+```
+
+The desktop jar is generated under:
+
+```text
+lwjgl3/build/libs/
+```
+
+## Development Notes
+
+- Java version: 21
+- Framework: LibGDX
+- Desktop backend: LWJGL3
+
+## WIP Checklist
+
+Not completed yet:
+
+- Player movement and collision
+- Real gameplay map
+- Room transitions
+- Item placement and collection
+- Inventory UI
+- Trap trigger system
+- Alarm event flow
+- Hiding system
+- Homeowner behavior
+- Dog/noise system
+- Hidden route
+- Final encounter
+- Ending screens
+- Save/load
+- Audio integration
+- Polished HUD
+- Unit tests for domain rules
+
+## Contributors
+
