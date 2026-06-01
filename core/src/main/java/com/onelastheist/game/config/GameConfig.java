@@ -1,6 +1,10 @@
 package com.onelastheist.game.config;
 
-/** Do phan giai va cac hang so hien thi toan cuc. */
+/**
+ * Global display constants. The virtual resolution is what every screen uses for
+ * its {@link com.badlogic.gdx.utils.viewport.FitViewport}, so layout coordinates
+ * stay stable even when the window is resized — LibGDX letterboxes to fit.
+ */
 public class GameConfig {
     public static final int VIRTUAL_WIDTH = 1920;
     public static final int VIRTUAL_HEIGHT = 1080;
