@@ -6,7 +6,14 @@ import com.onelastheist.game.config.BalanceConfig;
 import com.onelastheist.game.config.ControlConfig;
 import com.onelastheist.game.config.GameConfig;
 
-/** Chua cac dich vu va cau hinh dung chung trong ung dung. */
+/**
+ * Process-wide service locator. Holds objects that must outlive any single screen:
+ * the LibGDX {@link AssetManager}, key-binding config, gameplay tuning, and a
+ * back-reference to the {@link OneLastHeistGame} entry point.
+ *
+ * <p>Screens read from this rather than constructing their own copies — that way
+ * a settings change (e.g. rebinding a key) takes effect immediately on every screen.
+ */
 public class GameContext {
     private final OneLastHeistGame game;
     private final AssetManager assets;
@@ -28,6 +35,7 @@ public class GameContext {
     public ControlConfig getControlConfig() { return controlConfig; }
     public BalanceConfig getBalanceConfig() { return balanceConfig; }
 
+    /** Releases native handles owned by the AssetManager. Called from {@link OneLastHeistGame#dispose()}. */
     public void dispose() {
         assets.dispose();
     }

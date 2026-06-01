@@ -24,7 +24,15 @@ import com.badlogic.gdx.utils.viewport.FitViewport;
 import com.badlogic.gdx.utils.viewport.Viewport;
 import com.onelastheist.game.app.ScreenNavigator;
 
-/** Man hinh menu chinh cua One Last Heist. */
+/**
+ * Title screen. Renders a full-screen background, four image buttons (Play /
+ * Settings / Credits / Exit), and an optional credits popup drawn with
+ * {@link ShapeRenderer} primitives.
+ *
+ * <p>Most of the file is layout/aesthetic: panel chrome, corner coins, rivets,
+ * and a header plank are all hand-drawn shapes rather than pixel art so the
+ * style scales cleanly with the virtual viewport.
+ */
 public class MainMenuScreen implements Screen {
     private static final float WORLD_WIDTH = 1920f;
     private static final float WORLD_HEIGHT = 1080f;

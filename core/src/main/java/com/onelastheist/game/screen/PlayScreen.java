@@ -24,7 +24,25 @@ import com.onelastheist.game.world.Door;
 import com.onelastheist.game.world.GameWorld;
 import com.onelastheist.game.world.WorldFactory;
 
-/** Man hinh gameplay: quan ly vong doi LibGDX va uy quyen luat cho cac lop domain/world. */
+/**
+ * Gameplay screen. Owns the LibGDX lifecycle for an active heist run and
+ * delegates simulation to the domain layer ({@link GameWorld}, {@link PlayerController}).
+ *
+ * <p>Three-phase state machine:
+ * <ol>
+ *   <li>{@code TUTORIAL} — the OPERATION MANUAL screen with four key-cards.
+ *       Player can walk around freely; reaching the right edge starts the
+ *       fade transition into the world.</li>
+ *   <li>{@code FADING_TO_GAME} — short black fade while the world warms up.</li>
+ *   <li>{@code GAME} — the real heist. Camera follows the player, collisions
+ *       are active, door prompts appear when in range.</li>
+ * </ol>
+ *
+ * <p>Pause overlay (ESC) freezes the simulation and shows three buttons. Door
+ * prompts are an animated panel above any door the player is in range of:
+ * gold + slow pulse for unlocked doors, red + fast shake/flash for locked ones
+ * after the player presses E.
+ */
 public class PlayScreen extends ScreenAdapter {
     private static final float WORLD_WIDTH = 1920f;
     private static final float WORLD_HEIGHT = 1080f;
