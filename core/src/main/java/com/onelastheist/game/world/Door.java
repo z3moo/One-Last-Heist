@@ -3,9 +3,14 @@ package com.onelastheist.game.world;
 import com.badlogic.gdx.math.Rectangle;
 
 /**
- * Mot canh cua dan toi map khac. Hinh chu nhat trong toa do the gioi (sau MAP_UNIT_SCALE),
- * cong them ID cua map dich de PlayScreen quyet dinh dieu huong khi nguoi choi nhan E.
- * Cua khoa van hien prompt nhung khong cho qua va se nhay flash "LOCKED" khi an E.
+ * A single interactive door anchored in world coordinates. Carries everything
+ * {@link com.onelastheist.game.screen.PlayScreen} needs to render the prompt
+ * and resolve the E-key press: bounds, the target interior map id, a display
+ * label, and a locked flag.
+ *
+ * <p>Locked doors still render the prompt — they simply trigger a red flash
+ * on E instead of changing screens. The bounds rectangle is also reused as a
+ * solid in the collision map so the player cannot walk through the doorway.
  */
 public class Door {
     private final Rectangle bounds;
@@ -27,7 +32,11 @@ public class Door {
     public float getCenterX() { return bounds.x + bounds.width / 2f; }
     public float getCenterY() { return bounds.y + bounds.height / 2f; }
 
-    /** Hinh chu nhat nguoi choi co giao voi cua sau khi mo rong them radius. */
+    /**
+     * Tests whether the player's hitbox intersects the door bounds expanded by
+     * {@code radius} on each side. The radius is what makes the prompt appear
+     * a step before the player is literally touching the door.
+     */
     public boolean playerInRange(float px, float py, float pw, float ph, float radius) {
         float ax = bounds.x - radius;
         float ay = bounds.y - radius;

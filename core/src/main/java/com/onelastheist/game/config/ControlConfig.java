@@ -2,7 +2,12 @@ package com.onelastheist.game.config;
 
 import com.badlogic.gdx.Input;
 
-/** Tap trung cac phim dieu khien ban phim/chuot. */
+/**
+ * Keyboard bindings for player input. Read by {@link com.onelastheist.game.entity.player.PlayerController}
+ * each frame and by {@link com.onelastheist.game.screen.PlayScreen} for one-shot actions
+ * (interact / pause). Fields are public-final so screens can reference them without
+ * boilerplate getters; future settings UI can swap this whole instance in {@code GameContext}.
+ */
 public class ControlConfig {
     public final int moveUp = Input.Keys.W;
     public final int moveDown = Input.Keys.S;

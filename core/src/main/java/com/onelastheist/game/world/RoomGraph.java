@@ -5,10 +5,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Cac ket noi giua phong trong nha. */
+/**
+ * Logical room layout for the main house. Currently a flat list — once room
+ * adjacency, locked-door rules, and AI patrol routes need querying, this is
+ * where the graph edges should be added.
+ */
 public class RoomGraph {
     private final List<Room> rooms = new ArrayList<>();
 
+    /** Six-room main house preset. Order matches the planned floor plan. */
     public static RoomGraph createMainHouseGraph() {
         RoomGraph graph = new RoomGraph();
         graph.addRoom(new Room("Living Room"));

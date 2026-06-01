@@ -1,6 +1,13 @@
 package com.onelastheist.game.world;
 
-/** Dong ho cua map chinh. Tuyen bi mat co the tam dung bang setRunning(false). */
+/**
+ * Countdown timer for the main heist. Ticks down on every {@link #update(float)}
+ * call while {@code running} is true; reaching zero is the trigger for the
+ * "homeowner returns" / time-over fail flow.
+ *
+ * <p>Pause-able via {@link #setRunning(boolean)} so the hidden route (which has
+ * no time pressure) can freeze the clock while the player is inside it.
+ */
 public class WorldClock {
     private float remainingSeconds;
     private boolean running = true;
