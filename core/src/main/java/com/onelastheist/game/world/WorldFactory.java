@@ -11,13 +11,26 @@ import com.onelastheist.game.trap.AlarmSystem;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Tao world tu cau hinh va du lieu map. */
+/**
+ * Builds a fresh {@link GameWorld} from configuration plus on-disk map data.
+ * Every value PlayScreen needs to start a run is constructed here, including
+ * the player/NPC entities, the loaded Tiled map, the derived collision rectangles,
+ * and the registered door interactions.
+ *
+ * <p>Map coordinates are world units (Tiled pixels x {@link #MAP_UNIT_SCALE}).
+ * The map is 60x40 tiles; each tile is 16 source px → 48 world units.
+ */
 public class WorldFactory {
     public static final String DEFAULT_MAP_PATH = "maps/Exterior_Neighbour_upgrade.tmx";
+    /** Multiplier from Tiled source pixels to world units. Keeps sprites legible at 1080p. */
     public static final float MAP_UNIT_SCALE = 3f;
+    /** Identifier for the not-yet-imported main house interior map. */
     public static final String MAIN_HOUSE_INTERIOR_ID = "interior_main_house";
+    /** Identifier for the smaller, currently-locked house. */
     public static final String SIDE_HOUSE_INTERIOR_ID = "interior_side_house";
+    /** Tiled object layer that hosts the hand-tuned solid rectangles. */
     private static final String COLLISION_OBJECT_LAYER = "Collisions";
+    /** Tile layers that fall back to whole-tile blocking if no Collisions group is present. */
     private static final String[] FALLBACK_SOLID_LAYERS = {
         "Fence",
         "House_demo",
@@ -39,6 +52,13 @@ public class WorldFactory {
 
     public WorldFactory(BalanceConfig balance) { this.balance = balance; }
 
+    /**
+     * Build a default game world. Spawns the player at a fixed location, places
+     * the homeowner and dog (initially hidden — they appear later via
+     * {@code setVisible(true)}), loads the TMX map, derives collisions, and
+     * registers door interactions as additional solids so the player has to
+     * use E rather than walk through walls.
+     */
     public GameWorld createDefaultWorld() {
         Player player = new Player();
         player.setPosition(520f, 280f);
@@ -59,7 +79,8 @@ public class WorldFactory {
 
         List<Door> doors = createDoors();
         for (Door door : doors) {
-            // Cua chinh la solid de chan nguoi choi xuyen tuong; chi qua khi nhan E (xu ly o PlayScreen).
+            // Door rect doubles as a wall: the player cannot pass without pressing E.
+            // PlayScreen's interaction handler is what actually transitions to the interior.
             collisionMap.addSolid(door.getBounds().x, door.getBounds().y, door.getBounds().width, door.getBounds().height);
         }
 
@@ -78,14 +99,16 @@ public class WorldFactory {
     }
 
     /**
-     * Cua dinh san trong map ngoai troi. Toa do o trong don vi the gioi (sau MAP_UNIT_SCALE = 3),
-     * 1 tile = 48 don vi. Y theo libGDX (bottom-up): y = (mapHeight - rowFromTop - 1) * tileSize.
+     * Hardcoded door list for the exterior map. Coordinates are in world units
+     * after {@link #MAP_UNIT_SCALE} (1 tile = 48 units). LibGDX uses bottom-up
+     * Y, so a door visible at "row N from top" lives at
+     * {@code y = (mapHeight - rowFromTop - 1) * tileSize}.
      */
     private List<Door> createDoors() {
         List<Door> doors = new ArrayList<Door>();
-        // Big house (House_demo): cua truoc o cot 38-39, hang 15 tu tren xuong. Mo khoa => vao map noi that chinh.
+        // Big house (House_demo): front door at cols 38-39, row 15 from top. Unlocked.
         doors.add(new Door(1824f, 1152f, 96f, 48f, MAIN_HOUSE_INTERIOR_ID, "Enter House", false));
-        // Small house (House2): cua truoc o cot 28-29, hang 8 tu tren xuong. Khoa => chi hien thong bao.
+        // Small house (House2): front door at cols 28-29, row 8 from top. Locked for now.
         doors.add(new Door(1344f, 1488f, 96f, 48f, SIDE_HOUSE_INTERIOR_ID, "Locked", true));
         return doors;
     }

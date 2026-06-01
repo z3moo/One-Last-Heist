@@ -7,7 +7,12 @@ import com.onelastheist.game.screen.MainMenuScreen;
 import com.onelastheist.game.screen.PauseScreen;
 import com.onelastheist.game.screen.PlayScreen;
 
-/** Noi quan ly tap trung cac thao tac chuyen man hinh. */
+/**
+ * Centralized screen routing. Every {@code show*} method constructs the target
+ * screen and hands it to {@link com.badlogic.gdx.Game#setScreen(com.badlogic.gdx.Screen)}.
+ * Putting all transitions here keeps screens decoupled — a screen never instantiates
+ * its successor directly, it just calls {@code navigator.showSomething()}.
+ */
 public class ScreenNavigator {
     private final OneLastHeistGame game;
     private final GameContext context;

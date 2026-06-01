@@ -1,6 +1,11 @@
 package com.onelastheist.game.entity.base;
 
-/** Thuc the mien co ban: vi tri va co dang trong canh hay khong. */
+/**
+ * Base for everything placed in the world. Carries a position in world units
+ * (LibGDX convention: +Y up, origin bottom-left of the map) and a {@code visible}
+ * flag the renderer respects — useful for actors that exist in the simulation
+ * but should not be drawn yet (e.g. the homeowner before they spawn).
+ */
 public class Entity {
     private float x;
     private float y;

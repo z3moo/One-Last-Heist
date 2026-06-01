@@ -10,7 +10,16 @@ import com.onelastheist.game.trap.AlarmSystem;
 import java.util.Collections;
 import java.util.List;
 
-/** Mo hinh world luc chay. Luu trang thai game; viec ve duoc xu ly o noi khac. */
+/**
+ * Runtime model of the active heist. Bundles every long-lived gameplay object
+ * — player, NPCs, rooms, clock, objectives, alarm system, the loaded TiledMap,
+ * its derived collision data, and the door definitions — behind a single handle
+ * that screens and renderers can consume.
+ *
+ * <p>Construction is delegated to {@link WorldFactory}; once built, screens
+ * call {@link #update(float)} every frame and read the rest as needed. Rendering
+ * is intentionally kept out of this class — see {@link com.onelastheist.game.render.WorldRenderer}.
+ */
 public class GameWorld implements Disposable {
     private final Player player;
     private final HomeOwner homeOwner;
@@ -38,14 +47,17 @@ public class GameWorld implements Disposable {
         this.doors = doors == null ? Collections.<Door>emptyList() : doors;
     }
 
+    /** Per-frame tick. Advances the world clock and any NPCs that need a heartbeat. */
     public void update(float deltaSeconds) {
         clock.update(deltaSeconds);
         dog.update(deltaSeconds);
     }
 
     /**
-     * Cua dau tien nguoi choi dung trong tam interact, hoac null neu khong co.
-     * Tinh ban kinh dua tren hitbox cua player de tranh kich hoat tu xa.
+     * Returns the first door whose bounds, expanded by {@code interactRadius},
+     * overlap the player's hitbox — or {@code null} if the player is not near
+     * any door. Used by {@link com.onelastheist.game.screen.PlayScreen} to decide
+     * whether to draw the interact prompt and respond to the E key.
      */
     public Door findActiveDoor(float interactRadius) {
         if (doors.isEmpty()) return null;
@@ -70,6 +82,7 @@ public class GameWorld implements Disposable {
     public CollisionMap getCollisionMap() { return collisionMap; }
     public List<Door> getDoors() { return doors; }
 
+    /** Releases the loaded TiledMap. Other fields are POJOs that the GC handles. */
     @Override
     public void dispose() {
         if (tiledMap != null) tiledMap.dispose();

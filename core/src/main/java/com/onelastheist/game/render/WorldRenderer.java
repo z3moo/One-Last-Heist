@@ -17,24 +17,41 @@ import com.onelastheist.game.world.WorldFactory;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Ve GameWorld. Khong dat luat gameplay trong lop nay. */
+/**
+ * Renders {@link GameWorld} state every frame. Owns no gameplay logic — it only
+ * reads the world's positions/states and draws them. Two-pass tile rendering
+ * separates ground/object layers (drawn before the actors) from the
+ * {@code Overhead_Foreground} layer (drawn after the actors) so canopies and
+ * roof tops occlude characters that walk under them.
+ *
+ * <p>Animation handling: every walk/idle sheet is split into 8 directional rows
+ * of {@link #FRAME_SIZE}px frames; {@link #createAnimations} converts each row
+ * into a LibGDX {@link Animation}. The crouch sheet starts its useful frames
+ * at column 3 (frames 0-2 are skipped via {@link #CROUCH_WALK_STARTS}).
+ */
 public class WorldRenderer implements Disposable {
+    /** Tiled layer name that should be drawn after actors so it occludes them. */
     private static final String OVERHEAD_LAYER_NAME = "Overhead_Foreground";
     private static final int FRAME_SIZE = 48;
     private static final int DIRECTION_COUNT = 8;
     private static final int FRAME_COUNT = 5;
+    /** World-space draw size for human-sized actors (player, homeowner). */
     private static final float DRAW_SIZE = 144f;
+    /** Slightly smaller than humans so the dog reads visually as a pet. */
     private static final float DOG_DRAW_SIZE = 120f;
     private static final float FRAME_DURATION = 0.14f;
     private static final float CROUCH_IDLE_FRAME_DURATION = 0.22f;
     private static final float DOG_SLEEP_FRAME_DURATION = 0.32f;
+    /** Column index where each row's crouch-walk loop actually starts. */
     private static final int[] CROUCH_WALK_STARTS = {3, 3, 3, 3, 3, 3, 3, 3};
     private static final int[] CROUCH_IDLE_STARTS = {3, 3, 3, 3, 3, 3, 3, 3};
 
     private final GameWorld world;
     private final SpriteBatch batch = new SpriteBatch();
     private final OrthogonalTiledMapRenderer mapRenderer;
+    /** All tile layers except the overhead one — drawn before actors. */
     private final int[] groundLayerIndices;
+    /** Just the overhead layer — drawn after actors so trees/roofs occlude them. */
     private final int[] overheadLayerIndices;
     private final Texture playerIdleTexture = loadPixelTexture("characters/player/player_idle.png");
     private final Texture playerWalkTexture = loadPixelTexture("characters/player/player_walk.png");

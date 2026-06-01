@@ -13,15 +13,26 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Va cham dua tren cac hinh chu nhat trong objectgroup "Collisions" cua TiledMap.
- * Neu khong tim thay objectgroup do, fallback sang luoi block theo tile cua cac layer chi dinh.
+ * Collision data derived from a TiledMap. Reads the {@code <objectgroup name="Collisions">}
+ * authoring layer when present and converts each rectangle into a world-space AABB;
+ * {@link com.onelastheist.game.entity.base.MovableEntity} then tests its hitbox
+ * against this list during {@code tryMove}.
  *
- * Moi rect bi co lai mot khoang nho ({@link #SOLID_INSET}) o moi canh de bu cho viec
- * artist hay ve rect rong hon sprite vai pixel trong Tiled. Khong inset thi corner
- * cua object hay "tho ra" lam nguoi choi mac ket khi di cheo qua goc.
+ * <p>Each Tiled rectangle is shrunk by {@link #SOLID_INSET} on every side at
+ * load time. This compensates for artists drawing their collision rect a pixel
+ * or two larger than the visible sprite, which after {@code unitScale = 3}
+ * becomes ~5–10 world units of phantom edge sticking past every corner —
+ * exactly what makes the player feel like the corners are "poking" them.
+ *
+ * <p>If no {@code Collisions} object group exists, the constructor falls back
+ * to rasterizing the listed solid tile layers — every non-empty cell becomes
+ * a tile-sized solid rect. Less precise, but enough for prototype maps.
+ *
+ * <p>External systems (e.g. {@link WorldFactory} registering door blockers)
+ * can append more solids via {@link #addSolid(float, float, float, float)}.
  */
 public class CollisionMap {
-    /** Co lai cac canh khi load tu Tiled (world units). ~1.3 Tiled pixel sau MAP_UNIT_SCALE=3. */
+    /** Inset applied to each Tiled rect on load (world units). ~1.3 source pixels. */
     private static final float SOLID_INSET = 4f;
 
     private final float worldWidth;
