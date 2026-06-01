@@ -51,6 +51,7 @@ public class MainMenuScreen implements Screen {
     private boolean previousShowCredits;
     private boolean ignoreCreditsOutsideClick;
     private float statusTimer;
+    private String statusMessage = "Play button clicked - add game screen here";
 
     public MainMenuScreen() {
         this(null);
@@ -146,6 +147,11 @@ public class MainMenuScreen implements Screen {
             "start_screen/button_credits/btn_credits_hover.png",
             "start_screen/button_credits/btn_credits_pressed.png"
         );
+        ImageButton settingsButton = createButton(
+            "start_screen/button_setting/btn_setting_normal.png",
+            "start_screen/button_setting/btn_setting_hover.png",
+            "start_screen/button_setting/btn_setting_pressed.png"
+        );
         ImageButton exitButton = createButton(
             "start_screen/button_exit/btn_exit_normal.png",
             "start_screen/button_exit/btn_exit_hover.png",
@@ -159,8 +165,17 @@ public class MainMenuScreen implements Screen {
                 if (navigator != null) {
                     navigator.showPlayScreen();
                 } else {
+                    statusMessage = "Play button clicked - add game screen here";
                     statusTimer = 1.5f;
                 }
+            }
+        });
+        settingsButton.addListener(new ChangeListener() {
+            @Override
+            public void changed(ChangeEvent event, Actor actor) {
+                showCredits = false;
+                statusMessage = "Settings screen is not wired yet";
+                statusTimer = 1.5f;
             }
         });
         creditsButton.addListener(new ChangeListener() {
@@ -181,6 +196,7 @@ public class MainMenuScreen implements Screen {
         menuTable.setFillParent(true);
         menuTable.bottom().padBottom(78f);
         menuTable.add(playButton).size(BUTTON_WIDTH, BUTTON_HEIGHT).padBottom(18f).row();
+        menuTable.add(settingsButton).size(BUTTON_WIDTH, BUTTON_HEIGHT).padBottom(18f).row();
         menuTable.add(creditsButton).size(BUTTON_WIDTH, BUTTON_HEIGHT).padBottom(18f).row();
         menuTable.add(exitButton).size(BUTTON_WIDTH, BUTTON_HEIGHT);
         stage.addActor(menuTable);
@@ -217,7 +233,7 @@ public class MainMenuScreen implements Screen {
         } else {
             batch.setProjectionMatrix(viewport.getCamera().combined);
             batch.begin();
-            drawCenteredText("Play button clicked - add game screen here", 0f, 72f, WORLD_WIDTH, Color.WHITE, 2.2f);
+            drawCenteredText(statusMessage, 0f, 72f, WORLD_WIDTH, Color.WHITE, 2.2f);
             batch.end();
         }
     }
