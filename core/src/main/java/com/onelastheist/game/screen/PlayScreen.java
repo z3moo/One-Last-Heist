@@ -26,6 +26,7 @@ import com.onelastheist.game.world.WorldFactory;
 
 import static com.onelastheist.game.world.WorldFactory.EXTERIOR_MAP_ID;
 import static com.onelastheist.game.world.WorldFactory.MAIN_HOUSE_INTERIOR_ID;
+import static com.onelastheist.game.world.WorldFactory.SIDE_HOUSE_INTERIOR_ID;
 
 /**
  * Gameplay screen. Owns the LibGDX lifecycle for an active heist run and
@@ -247,11 +248,11 @@ public class PlayScreen extends ScreenAdapter {
         if (activeDoor != null && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
             triggerDoor(activeDoor);
         }
-        // F: pick up the meat the player is standing on. Cheap to call every
-        // frame the key is just-pressed; world.tryPickUpMeat() is a no-op when
-        // there's nothing under the player or we're outdoors.
+        // F: pick up whichever item the player is standing on.
         if (Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
-            if (world.tryPickUpMeat()) {
+            if (world.tryPickUpKey()) {
+                Gdx.app.log("PlayScreen", "Picked up key");
+            } else if (world.tryPickUpMeat()) {
                 Gdx.app.log("PlayScreen", "Picked up meat");
             }
         }
@@ -264,18 +265,28 @@ public class PlayScreen extends ScreenAdapter {
     }
 
     private void triggerDoor(Door door) {
+        String targetMapId = door.getTargetMapId();
         if (door.isLocked()) {
-            // Cua khoa: nhay flash do trong vai giay, khong dieu huong.
-            lockedFlashTimer = LOCKED_FLASH_DURATION;
-            Gdx.app.log("PlayScreen", "Door locked: " + door.getTargetMapId());
-            return;
+            if (SIDE_HOUSE_INTERIOR_ID.equals(targetMapId) && world.hasSideHouseKey()) {
+                door.unlock();
+            } else {
+                // Cua khoa: nhay flash do trong vai giay, khong dieu huong.
+                lockedFlashTimer = LOCKED_FLASH_DURATION;
+                Gdx.app.log("PlayScreen", "Door locked: " + targetMapId);
+                return;
+            }
         }
         // Map swaps in place — same screen, same WorldRenderer instance, just a
         // different active TiledMap and door list. Clearing activeDoor avoids
         // drawing a stale prompt for one frame at the new player position.
-        String targetMapId = door.getTargetMapId();
         if (MAIN_HOUSE_INTERIOR_ID.equals(targetMapId)) {
             world.enterInterior();
+            activeDoor = null;
+            lockedFlashTimer = 0f;
+            return;
+        }
+        if (SIDE_HOUSE_INTERIOR_ID.equals(targetMapId)) {
+            world.enterSideHouse();
             activeDoor = null;
             lockedFlashTimer = 0f;
             return;

@@ -231,17 +231,21 @@ public class CollisionMap {
      * the leg collisions read as "invisible blocks under the furniture".
      * Pruning them lets the player walk freely under tall furniture.
      *
-     * <p>The double gate is what keeps walls intact:
+     * <p>The triple gate is what keeps walls intact:
      * <ul>
+     *   <li><b>Not tile-sized.</b> Solids that are exactly {@link #tileSize}
+     *       on both axes came from {@link #loadFromTileLayers}'s rasterization
+     *       of the {@code walls} layer — they are walls, never furniture
+     *       legs. Without this gate, an {@code object_overhead} object placed
+     *       over a wall (e.g. a tall plant beside a wall) would silently
+     *       erase the wall's collision and let the player phase through it.</li>
      *   <li><b>Fully contained.</b> A solid that pokes outside any overhead
      *       object's footprint isn't decoration leg — could be the corner of
      *       a wall.</li>
      *   <li><b>Both dimensions ≤ {@link #PRUNE_MAX_DIMENSION}.</b> Walls in
      *       this map can run 240+ source-px long after scale (~720+ world
      *       units). Even when a long overhead decoration covers a long wall
-     *       section, the wall's height usually exceeds the cutoff. The
-     *       hard-and-tall test catches the no-collision-on-walls regression
-     *       the previous center-only and contained-only rules both leaked.</li>
+     *       section, the wall's height usually exceeds the cutoff.</li>
      * </ul>
      */
     private void pruneSolidsUnderOverheadObjects(MapLayers layers, float unitScale) {
@@ -251,8 +255,11 @@ public class CollisionMap {
 
         for (Iterator<Rectangle> it = solids.iterator(); it.hasNext(); ) {
             Rectangle solid = it.next();
-            // Furniture-leg sized? Both dims under the cutoff. Walls are long
-            // in at least one axis and survive on this gate alone.
+            // Tile-aligned tile-sized solids come from `walls` rasterization.
+            // Never prune them — they are the authoritative wall collision.
+            if (solid.width == tileSize && solid.height == tileSize) continue;
+            // Furniture-leg sized? Both dims under the cutoff. Long walls
+            // (objectgroup-authored runs) survive on this gate alone.
             if (solid.width > PRUNE_MAX_DIMENSION || solid.height > PRUNE_MAX_DIMENSION) continue;
             for (int i = 0, n = overheadRects.size(); i < n; i++) {
                 Rectangle r = overheadRects.get(i);

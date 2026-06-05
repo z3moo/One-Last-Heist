@@ -16,7 +16,7 @@ public class Door {
     private final Rectangle bounds;
     private final String targetMapId;
     private final String label;
-    private final boolean locked;
+    private boolean locked;
 
     public Door(float x, float y, float width, float height, String targetMapId, String label, boolean locked) {
         this.bounds = new Rectangle(x, y, width, height);
@@ -29,6 +29,7 @@ public class Door {
     public String getTargetMapId() { return targetMapId; }
     public String getLabel() { return label; }
     public boolean isLocked() { return locked; }
+    public void unlock() { locked = false; }
     public float getCenterX() { return bounds.x + bounds.width / 2f; }
     public float getCenterY() { return bounds.y + bounds.height / 2f; }
 

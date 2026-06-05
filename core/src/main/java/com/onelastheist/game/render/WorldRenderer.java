@@ -1,7 +1,5 @@
 package com.onelastheist.game.render;
 
-import com.badlogic.gdx.graphics.Color;
-import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.Animation;
@@ -22,6 +20,7 @@ import com.onelastheist.game.entity.base.MovableEntity;
 import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.player.Player;
 import com.onelastheist.game.environment.DroppedMeat;
+import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
 import com.onelastheist.game.world.GameWorld;
 import com.onelastheist.game.world.WorldFactory;
@@ -89,15 +88,33 @@ public class WorldRenderer implements Disposable {
      * into {@link YSortTileItem}s so each cell can race the player on Y.
      * Object groups become per-object {@link YSortObjectItem}s.
      *
-     * <p>The order of these names doesn't matter for correctness — Y-sort
-     * resolves draw order — but it matters for tie-breaks (when an actor and
-     * a tile have the exact same anchor Y, the one drawn later wins). Tiles
-     * are listed before object_overhead so a wall cap at the same Y as a
-     * tall plant draws under the plant.
+     * <p>Tokens covered:
+     * <ul>
+     *   <li>"wall" — every wall tile layer (walls, wall_top, walls_top,
+     *       wall_decor, wall_top2). All wall art needs Y-sort: a player
+     *       whose foot is below a wall cell's bottom (south) draws ON TOP,
+     *       while a player whose foot is above (north, inside the room)
+     *       draws BEHIND.</li>
+     *   <li>"bathroom" — bathroom-furniture tile layer carries tubs/toilets/
+     *       sinks (multi-row tall fixtures). They must occlude the player
+     *       when stepped behind.</li>
+     *   <li>"overhead" — despite the name, the interior {@code overhead} and
+     *       {@code overhead_decor} layers carry the north-face wall art of
+     *       upper rooms; {@code object_overhead} carries tall furniture
+     *       tops (plants, bookcases, stuffed animals). All three need
+     *       Y-sort, not always-on-top — otherwise upper rooms appear
+     *       sealed by an "invisible wall" that the player can never step
+     *       in front of.</li>
+     * </ul>
+     *
+     * <p>If a future map adds a true ceiling-canopy layer (player walks
+     * <em>under</em> it, e.g. a doorway top), introduce a separate
+     * always-over-actors post-pass with its own token list.
      */
     private static final String[] Y_SORT_LAYER_TOKENS = {
-        "wall_top",
-        "overhead",        // catches "overhead", "overhead_decor", "object_overhead"
+        "wall",
+        "bathroom",
+        "overhead",
     };
     /** Object group whose name (case-insensitive) matches this is collision-only and never rendered. */
     private static final String COLLISION_LAYER_NAME = "collisions";
@@ -108,6 +125,8 @@ public class WorldRenderer implements Disposable {
     private static final float DRAW_SIZE = 144f;
     /** Slightly smaller than humans so the dog reads visually as a pet. */
     private static final float DOG_DRAW_SIZE = 120f;
+    /** Max world-space dimension for floor item sprites. */
+    private static final float ITEM_DRAW_SIZE = 36f;
     private static final float FRAME_DURATION = 0.14f;
     private static final float CROUCH_IDLE_FRAME_DURATION = 0.22f;
     private static final float DOG_SLEEP_FRAME_DURATION = 0.32f;
@@ -120,7 +139,7 @@ public class WorldRenderer implements Disposable {
     private final GameWorld world;
     private final SpriteBatch batch = new SpriteBatch();
     private OrthogonalTiledMapRenderer mapRenderer;
-    /** Map layers drawn before the Y-sort pass, in TMX order — floors, walls, furniture (the "always under" stuff). */
+    /** Map layers drawn before the Y-sort pass, in TMX order — floors and floor decor (the "always under" stuff). */
     private final List<LayerOp> floorPass = new ArrayList<>();
     /** Static (map-derived) Y-sortable items. Built once per map; reused every frame. */
     private final List<YSortItem> staticYSortItems = new ArrayList<>();
@@ -141,6 +160,8 @@ public class WorldRenderer implements Disposable {
     private final Texture ownerWalkTexture = loadPixelTexture("characters/enemies/neighbour/enemies_walk.png");
     private final Texture dogWalkTexture = loadPixelTexture("characters/enemies/dog/dog_walk.png");
     private final Texture dogSleepTexture = loadPixelTexture("characters/enemies/dog/dog_sleep.png");
+    private final Texture meatTexture = loadPixelTexture("items/meat.png");
+    private final Texture keyTexture = loadPixelTexture("items/key.png");
     private final List<Animation<TextureRegion>> playerIdle = createAnimations(playerIdleTexture);
     private final List<Animation<TextureRegion>> playerWalk = createAnimations(playerWalkTexture);
     private final List<Animation<TextureRegion>> playerCrouchWalk = createAnimations(playerCrouchTexture, FRAME_DURATION, CROUCH_WALK_STARTS, FRAME_COUNT);
@@ -149,8 +170,6 @@ public class WorldRenderer implements Disposable {
     private final List<Animation<TextureRegion>> ownerWalk = createAnimations(ownerWalkTexture);
     private final List<Animation<TextureRegion>> dogWalk = createAnimations(dogWalkTexture);
     private final Animation<TextureRegion> dogSleep = createSleepAnimation(dogSleepTexture, DOG_SLEEP_FRAME_DURATION, DOG_SLEEP_FRAME_START);
-    /** 1×1 white texture used as a tintable placeholder for items still missing real art (meat pickups, dropped meat). */
-    private final Texture placeholderTexture = createWhitePixelTexture();
     private float stateTime;
 
     public WorldRenderer(GameWorld world) {
@@ -159,8 +178,11 @@ public class WorldRenderer implements Disposable {
     }
 
     /**
-     * Frame entry point. Draws floor/wall map layers, then a single Y-sorted
-     * pass containing wall caps, overhead furniture, and actors.
+     * Frame entry point. Draws floor map layers, then a single Y-sorted
+     * pass containing wall/cap/overhead tiles, every furniture object, and
+     * actors interleaved by foot Y. There is intentionally no
+     * "always-on-top" overhead pass: every layer either sits under the
+     * player (floor pass) or interleaves with the player by Y (Y-sort pass).
      */
     public void render(float deltaSeconds, OrthographicCamera camera) {
         stateTime += deltaSeconds;
@@ -209,7 +231,8 @@ public class WorldRenderer implements Disposable {
         ownerWalkTexture.dispose();
         dogWalkTexture.dispose();
         dogSleepTexture.dispose();
-        placeholderTexture.dispose();
+        meatTexture.dispose();
+        keyTexture.dispose();
     }
 
     private void refreshIfMapChanged() {
@@ -229,6 +252,13 @@ public class WorldRenderer implements Disposable {
      * Build (or rebuild) the OrthogonalTiledMapRenderer plus the floor pass
      * plan and the static Y-sort item list for the world's currently-active
      * TiledMap. Called at construction and whenever the map version changes.
+     *
+     * <p>Classification per top-level layer:
+     * <ul>
+     *   <li>Collision-only group → skip</li>
+     *   <li>Y-sort-named layer (wall/bathroom/overhead) or any object group with tile objects → Y-sort</li>
+     *   <li>Otherwise → floor pass (always under actors)</li>
+     * </ul>
      */
     private void rebuildMapRenderer() {
         if (mapRenderer != null) mapRenderer.dispose();
@@ -243,7 +273,7 @@ public class WorldRenderer implements Disposable {
             String name = layer.getName();
             if (isCollisionLayer(name) || isCollisionOnlyGroup(layer)) continue;
 
-            if (matchesYSortLayer(name)) {
+            if (matchesYSortLayer(name) || hasTileObjects(layer)) {
                 addYSortItemsFromLayer(layer, i);
             } else {
                 LayerOp op = classifyFloorLayer(layer, i);
@@ -266,11 +296,29 @@ public class WorldRenderer implements Disposable {
         return false;
     }
 
+    private static boolean hasTileObjects(MapLayer layer) {
+        if (layer instanceof TiledMapTileLayer || layer instanceof MapGroupLayer) return false;
+        for (MapObject obj : layer.getObjects()) {
+            if (obj instanceof TiledMapTileMapObject) return true;
+        }
+        return false;
+    }
+
     /**
      * Decompose one Y-sortable map layer into per-cell or per-object items
      * appended to {@link #staticYSortItems}. A tile layer turns into one
      * {@link YSortTileItem} per non-empty cell; an object group turns into
      * one {@link YSortObjectItem} per tile-placed object.
+     *
+     * <p>Wall-run anchor: for tile layers, every cell's anchor Y is the
+     * bottom of its contiguous south-running stack <em>in the same layer</em>.
+     * A single-tile wall is unchanged (its run is itself), but a 3-tile-tall
+     * wall has all three cells anchored to the bottom cell's Y — the wall's
+     * south face. Without this, the upper cells anchor too high and the
+     * player draws on top of them whenever they walk just south of the wall
+     * (foot Y below the bottom cell's anchor but above the upper cells').
+     * Anchoring the whole run at the south face means the entire wall
+     * occludes any player whose foot Y is at or above the wall's south edge.
      */
     private void addYSortItemsFromLayer(MapLayer layer, int topLevelIndex) {
         if (layer instanceof TiledMapTileLayer) {
@@ -278,34 +326,119 @@ public class WorldRenderer implements Disposable {
             float scale = WorldFactory.MAP_UNIT_SCALE;
             float tileW = tileLayer.getTileWidth() * scale;
             float tileH = tileLayer.getTileHeight() * scale;
-            for (int y = 0; y < tileLayer.getHeight(); y++) {
-                for (int x = 0; x < tileLayer.getWidth(); x++) {
+            int height = tileLayer.getHeight();
+            int width = tileLayer.getWidth();
+            // Pre-compute per-(col, libGDX-row) bottom-of-run anchor: the
+            // libGDX y of the southernmost cell in the same-column contiguous
+            // run that this cell belongs to. One bottom-up sweep per column.
+            float[] anchorPerCell = new float[width * height];
+            for (int x = 0; x < width; x++) {
+                float runBottomY = 0f;
+                boolean inRun = false;
+                for (int y = 0; y < height; y++) {
+                    TiledMapTileLayer.Cell cell = tileLayer.getCell(x, y);
+                    boolean filled = cell != null && cell.getTile() != null;
+                    if (filled) {
+                        if (!inRun) {
+                            runBottomY = y * tileH;
+                            inRun = true;
+                        }
+                        anchorPerCell[y * width + x] = runBottomY;
+                    } else {
+                        inRun = false;
+                    }
+                }
+            }
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
                     TiledMapTileLayer.Cell cell = tileLayer.getCell(x, y);
                     if (cell == null || cell.getTile() == null) continue;
                     TextureRegion region = cell.getTile().getTextureRegion();
                     if (region == null) continue;
+                    // Cell origin is the bottom-left of the tile-grid cell, but
+                    // the tile's pixel region may be larger than tileW × tileH
+                    // (windows are 16×48, wall decor pictures are 16×32 in this
+                    // map). Tiled anchors such tiles at the cell's bottom and
+                    // lets them extend UP — so we draw at region-sized w/h, not
+                    // tile-sized. Hardcoding tileW/tileH would compress the
+                    // sprite into a single cell and crop the rest off.
                     float worldX = x * tileW;
                     float worldY = y * tileH;
-                    staticYSortItems.add(new YSortTileItem(region, worldX, worldY, tileW, tileH));
+                    float drawW = region.getRegionWidth() * scale;
+                    float drawH = region.getRegionHeight() * scale;
+                    float anchorY = anchorPerCell[y * width + x];
+                    staticYSortItems.add(new YSortTileItem(
+                        region, worldX, worldY, drawW, drawH, anchorY,
+                        cell.getFlipHorizontally(), cell.getFlipVertically(), cell.getRotation()));
                 }
             }
             return;
         }
-        // Object group: each tile-placed object becomes one item.
+        // Object group: each tile-placed object becomes one item. We pre-pass
+        // the group to detect "stacked" composites — multi-tile furniture
+        // (lamps, dressers, chairs) and trees built from several adjacent
+        // tile objects share a single anchor at the southernmost piece's
+        // bottom. Without that, each piece anchors at its own bottom and the
+        // player passes through them ONE PIECE AT A TIME as foot Y crosses
+        // each piece's anchor, instead of past the whole composite at once.
+        //
+        // Detection: object B "supports" object A if B's top edge meets A's
+        // bottom edge (within a 1 wu tolerance) and their X ranges overlap.
+        // The transitive root of the supports chain is the run bottom.
+        List<TileObjInfo> infos = new ArrayList<>();
+        float scale = WorldFactory.MAP_UNIT_SCALE;
         for (MapObject obj : layer.getObjects()) {
             if (!(obj instanceof TiledMapTileMapObject)) continue;
             TiledMapTileMapObject tileObj = (TiledMapTileMapObject) obj;
             TextureRegion region = tileObj.getTile().getTextureRegion();
             if (region == null) continue;
-            float scale = WorldFactory.MAP_UNIT_SCALE;
             float x = tileObj.getX() * scale;
             float y = tileObj.getY() * scale;
             Object wProp = obj.getProperties().get("width");
             Object hProp = obj.getProperties().get("height");
             float w = (wProp instanceof Number ? ((Number) wProp).floatValue() : region.getRegionWidth()) * scale;
             float h = (hProp instanceof Number ? ((Number) hProp).floatValue() : region.getRegionHeight()) * scale;
+            infos.add(new TileObjInfo(tileObj, region, x, y, w, h));
+        }
+        // Find each object's supporter (the one directly below it). N² scan;
+        // object groups stay under a few hundred entries so this is cheap.
+        final float STACK_TOLERANCE = 1f;
+        for (TileObjInfo a : infos) {
+            for (TileObjInfo b : infos) {
+                if (b == a) continue;
+                if (Math.abs(b.worldY + b.h - a.worldY) < STACK_TOLERANCE
+                    && a.worldX < b.worldX + b.w
+                    && a.worldX + a.w > b.worldX) {
+                    a.supporter = b;
+                    break;
+                }
+            }
+        }
+        for (TileObjInfo info : infos) {
+            // Walk the support chain to its root with a hard cap so a cyclic
+            // supports relation (shouldn't happen, but defensive) can't hang.
+            TileObjInfo bottom = info;
+            int safety = infos.size() + 1;
+            while (bottom.supporter != null && safety-- > 0) bottom = bottom.supporter;
             staticYSortItems.add(new YSortObjectItem(
-                region, x, y, w, h, tileObj.isFlipHorizontally(), tileObj.isFlipVertically()));
+                info.region, info.worldX, info.worldY, info.w, info.h, bottom.worldY,
+                info.obj.isFlipHorizontally(), info.obj.isFlipVertically()));
+        }
+    }
+
+    /** Working entry for {@link #addYSortItemsFromLayer}'s composite-detection pass. */
+    private static final class TileObjInfo {
+        final TiledMapTileMapObject obj;
+        final TextureRegion region;
+        final float worldX;
+        final float worldY;
+        final float w;
+        final float h;
+        TileObjInfo supporter;
+        TileObjInfo(TiledMapTileMapObject obj, TextureRegion region, float worldX, float worldY, float w, float h) {
+            this.obj = obj; this.region = region;
+            this.worldX = worldX; this.worldY = worldY;
+            this.w = w; this.h = h;
         }
     }
 
@@ -336,6 +469,9 @@ public class WorldRenderer implements Disposable {
                 frameYSortBuffer.add(new YSortMeatItem(dropped.getX(), dropped.getY(), dropped.isDrugged()));
             }
         }
+        for (KeyPickup pickup : world.getKeyPickups()) {
+            frameYSortBuffer.add(new YSortKeyItem(pickup.getX(), pickup.getY()));
+        }
 
         // Actors. Anchor Y is the foot, not the sprite origin — that's what
         // makes a player at the south wall correctly sort over the wall cap.
@@ -344,7 +480,7 @@ public class WorldRenderer implements Disposable {
                 frameYSortBuffer.add(new YSortActorItem(world.getHomeOwner(), ActorKind.HOMEOWNER));
             }
         } else {
-            if (world.getDog().isVisible()) {
+            if (world.hasActiveDog()) {
                 frameYSortBuffer.add(new YSortActorItem(world.getDog(), ActorKind.DOG));
             }
         }
@@ -449,43 +585,27 @@ public class WorldRenderer implements Disposable {
         outputBatch.draw(frame, actor.getX(), actor.getY(), DRAW_SIZE, DRAW_SIZE);
     }
 
-    /**
-     * Draw a meat placeholder square. Used by {@link YSortMeatItem}; tints
-     * the white pixel texture pink/brown based on drugged state. Save and
-     * restore the batch tint via {@code .cpy()} because {@code getColor()}
-     * returns the batch's internal Color reference, not a snapshot.
-     */
-    private void drawMeatPlaceholder(Batch outputBatch, float x, float y, boolean drugged) {
-        float size = 24f;
-        Color old = outputBatch.getColor().cpy();
-        outputBatch.setColor(drugged ? Color.PINK : Color.BROWN);
-        outputBatch.draw(placeholderTexture, x - size / 2f, y - size / 2f, size, size);
-        outputBatch.setColor(old);
+    private void drawMeatItem(Batch outputBatch, float x, float y, boolean drugged) {
+        drawCenteredItem(outputBatch, meatTexture, x, y);
+    }
+
+    private void drawKeyItem(Batch outputBatch, float x, float y) {
+        drawCenteredItem(outputBatch, keyTexture, x, y);
+    }
+
+    private static void drawCenteredItem(Batch outputBatch, Texture texture, float centerX, float centerY) {
+        float width = texture.getWidth();
+        float height = texture.getHeight();
+        float scale = ITEM_DRAW_SIZE / Math.max(width, height);
+        float drawW = width * scale;
+        float drawH = height * scale;
+        outputBatch.draw(texture, centerX - drawW / 2f, centerY - drawH / 2f, drawW, drawH);
     }
 
     private static Texture loadPixelTexture(String path) {
         Texture texture = new Texture(path);
         texture.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
         return texture;
-    }
-
-    /**
-     * 1×1 white pixel built in code so we don't need any dependency on a real
-     * art file for placeholder rendering. Tinting via the SpriteBatch color
-     * gives us color-coded squares for items whose final sprites haven't been
-     * authored yet (drugged meat = pink, plain meat = brown).
-     */
-    private static Texture createWhitePixelTexture() {
-        Pixmap pix = new Pixmap(1, 1, Pixmap.Format.RGBA8888);
-        try {
-            pix.setColor(Color.WHITE);
-            pix.fill();
-            Texture texture = new Texture(pix);
-            texture.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
-            return texture;
-        } finally {
-            pix.dispose();
-        }
     }
 
     private static List<Animation<TextureRegion>> createAnimations(Texture texture) {
@@ -573,16 +693,51 @@ public class WorldRenderer implements Disposable {
         private final float worldY;
         private final float w;
         private final float h;
-        YSortTileItem(TextureRegion region, float worldX, float worldY, float w, float h) {
+        private final float anchorY;
+        private final boolean flipH;
+        private final boolean flipV;
+        private final int rotation;
+        YSortTileItem(TextureRegion region, float worldX, float worldY, float w, float h, float anchorY,
+                      boolean flipH, boolean flipV, int rotation) {
             this.region = region;
             this.worldX = worldX;
             this.worldY = worldY;
             this.w = w;
             this.h = h;
+            this.anchorY = anchorY;
+            this.flipH = flipH;
+            this.flipV = flipV;
+            this.rotation = rotation;
         }
-        @Override public float anchorY() { return worldY; }
+        @Override public float anchorY() { return anchorY; }
         @Override public void draw(Batch batch, WorldRenderer renderer) {
-            batch.draw(region, worldX, worldY, w, h);
+            // OrthogonalTiledMapRenderer handled TMX flip/rotation flags for us
+            // before these layers moved into the Y-sort pass. Re-apply those
+            // flags here so wall_top/overhead textures keep the exact same
+            // orientation as the old renderer.
+            if (flipH || flipV) region.flip(flipH, flipV);
+            try {
+                float degrees = rotationDegrees(rotation);
+                if (degrees == 0f) {
+                    batch.draw(region, worldX, worldY, w, h);
+                } else {
+                    batch.draw(region, worldX, worldY, w / 2f, h / 2f, w, h, 1f, 1f, degrees);
+                }
+            } finally {
+                if (flipH || flipV) region.flip(flipH, flipV);
+            }
+        }
+        private static float rotationDegrees(int rotation) {
+            switch (rotation) {
+                case TiledMapTileLayer.Cell.ROTATE_90:
+                    return 90f;
+                case TiledMapTileLayer.Cell.ROTATE_180:
+                    return 180f;
+                case TiledMapTileLayer.Cell.ROTATE_270:
+                    return 270f;
+                default:
+                    return 0f;
+            }
         }
     }
 
@@ -593,18 +748,20 @@ public class WorldRenderer implements Disposable {
         private final float worldY;
         private final float w;
         private final float h;
+        private final float anchorY;
         private final boolean flipH;
         private final boolean flipV;
-        YSortObjectItem(TextureRegion region, float worldX, float worldY, float w, float h, boolean flipH, boolean flipV) {
+        YSortObjectItem(TextureRegion region, float worldX, float worldY, float w, float h, float anchorY, boolean flipH, boolean flipV) {
             this.region = region;
             this.worldX = worldX;
             this.worldY = worldY;
             this.w = w;
             this.h = h;
+            this.anchorY = anchorY;
             this.flipH = flipH;
             this.flipV = flipV;
         }
-        @Override public float anchorY() { return worldY; }
+        @Override public float anchorY() { return anchorY; }
         @Override public void draw(Batch batch, WorldRenderer renderer) {
             if (flipH || flipV) {
                 region.flip(flipH, flipV);
@@ -654,7 +811,21 @@ public class WorldRenderer implements Disposable {
         }
         @Override public float anchorY() { return y; }
         @Override public void draw(Batch batch, WorldRenderer renderer) {
-            renderer.drawMeatPlaceholder(batch, x, y, drugged);
+            renderer.drawMeatItem(batch, x, y, drugged);
+        }
+    }
+
+    /** Storage key pickup. Anchor at key Y so furniture/walls can occlude it naturally. */
+    private static final class YSortKeyItem implements YSortItem {
+        private final float x;
+        private final float y;
+        YSortKeyItem(float x, float y) {
+            this.x = x;
+            this.y = y;
+        }
+        @Override public float anchorY() { return y; }
+        @Override public void draw(Batch batch, WorldRenderer renderer) {
+            renderer.drawKeyItem(batch, x, y);
         }
     }
 

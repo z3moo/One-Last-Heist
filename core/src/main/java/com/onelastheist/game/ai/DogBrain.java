@@ -116,27 +116,29 @@ public class DogBrain {
         replanTimer -= delta;
         updateStuckDetector(delta);
 
-        // Meat sensing first — meat overrides everything an awake dog is doing,
-        // and even wakes natural sleepers (drugged dogs are immune).
-        DroppedMeat meatTarget = senseMeat(meats);
-        if (meatTarget != null && dog.canBeDisturbed() && dog.getState() != NpcState.INVESTIGATING_MEAT) {
-            dog.enterState(NpcState.INVESTIGATING_MEAT, INVESTIGATING_MEAT_TIMEOUT);
-            planPathTo(meatTarget.getX(), meatTarget.getY());
-        }
-
-        // Noise sensing — meat takes priority; drugged dogs are deaf.
+        // Noise sensing first: if the player is making footsteps, the dog must
+        // target the player immediately instead of continuing a wander target.
         boolean heardPlayer = false;
-        if (meatTarget == null && dog.canBeDisturbed() && playerIsAudible(player)) {
+        if (dog.canBeDisturbed() && playerIsAudible(player)) {
             heardPlayer = true;
             silenceTimer = 0f;
-            float px = player.getX() + player.getHitboxOffsetX();
-            float py = player.getY() + player.getHitboxOffsetY();
+            float px = dogOriginAtPlayerCenterX(player);
+            float py = dogOriginAtPlayerCenterY(player);
             if (dog.getState() != NpcState.INVESTIGATING_NOISE) {
                 dog.enterState(NpcState.INVESTIGATING_NOISE, INVESTIGATING_NOISE_TIMEOUT);
                 planPathTo(px, py);
             } else if (replanTimer <= 0f) {
                 planPathTo(px, py);
             }
+        }
+
+        // Meat only steals attention once the player has gone quiet. That keeps
+        // footsteps reliable while still letting dropped meat distract a dog when
+        // the player crouches/stops after baiting it.
+        DroppedMeat meatTarget = heardPlayer ? null : senseMeat(meats);
+        if (meatTarget != null && dog.canBeDisturbed() && dog.getState() != NpcState.INVESTIGATING_MEAT) {
+            dog.enterState(NpcState.INVESTIGATING_MEAT, INVESTIGATING_MEAT_TIMEOUT);
+            planPathTo(dogOriginAtPointX(meatTarget.getX()), dogOriginAtPointY(meatTarget.getY()));
         }
         if (!heardPlayer) silenceTimer += delta;
 
@@ -211,13 +213,15 @@ public class DogBrain {
                     waypoints.clear();
                     break;
                 }
+                float meatGoalX = dogOriginAtPointX(meatTarget.getX());
+                float meatGoalY = dogOriginAtPointY(meatTarget.getY());
                 if (replanTimer <= 0f
-                    && (Math.abs(lastPlanGoalX - meatTarget.getX()) > 1f
-                        || Math.abs(lastPlanGoalY - meatTarget.getY()) > 1f)) {
-                    planPathTo(meatTarget.getX(), meatTarget.getY());
+                    && (Math.abs(lastPlanGoalX - meatGoalX) > 1f
+                        || Math.abs(lastPlanGoalY - meatGoalY) > 1f)) {
+                    planPathTo(meatGoalX, meatGoalY);
                 }
                 stepTowardTarget(delta);
-                if (distanceTo(meatTarget.getX(), meatTarget.getY()) <= balance.dogMeatEatRange) {
+                if (distanceFromDogCenterTo(meatTarget.getX(), meatTarget.getY()) <= balance.dogMeatEatRange) {
                     meatTarget.consume();
                     if (meatTarget.isDrugged()) {
                         dog.enterState(NpcState.DRUGGED,
@@ -275,7 +279,7 @@ public class DogBrain {
     private float distanceToPlayerHitbox(Player player) {
         float px = player.getX() + player.getHitboxOffsetX() + player.getHitboxWidth() / 2f;
         float py = player.getY() + player.getHitboxOffsetY() + player.getHitboxHeight() / 2f;
-        return distanceTo(px, py);
+        return distanceFromDogCenterTo(px, py);
     }
 
     /** Closest unconsumed meat within smell range, or null. */
@@ -286,8 +290,8 @@ public class DogBrain {
         for (int i = 0, n = meats.size(); i < n; i++) {
             DroppedMeat m = meats.get(i);
             if (m.isConsumed()) continue;
-            float dx = m.getX() - dog.getX();
-            float dy = m.getY() - dog.getY();
+            float dx = m.getX() - dogCenterX();
+            float dy = m.getY() - dogCenterY();
             float distSq = dx * dx + dy * dy;
             if (distSq <= bestDistSq) {
                 best = m;
@@ -305,6 +309,16 @@ public class DogBrain {
      * targets behind walls; up to 16 retries before giving up for this frame.
      */
     private void pickWanderTarget() {
+        if (pathfinder != null) {
+            for (int i = 0; i < 48; i++) {
+                float[] target = pathfinder.randomWalkablePoint(
+                    wanderBounds, dog.getX(), dog.getY(), WANDER_MIN_DISTANCE, 4);
+                if (target != null && planPathTo(target[0], target[1])) return;
+            }
+            // No reachable tile-center target this tick — sit out, retry next frame.
+            return;
+        }
+
         float minDistSq = WANDER_MIN_DISTANCE * WANDER_MIN_DISTANCE;
         for (int i = 0; i < 16; i++) {
             float x = MathUtils.random(wanderBounds.x, wanderBounds.x + wanderBounds.width);
@@ -314,7 +328,6 @@ public class DogBrain {
             if (dx * dx + dy * dy < minDistSq) continue;
             if (planPathTo(x, y)) return;
         }
-        // No reachable target this tick — sit out, retry next frame.
     }
 
     /**
@@ -387,6 +400,36 @@ public class DogBrain {
         float dx = x - dog.getX();
         float dy = y - dog.getY();
         return (float) Math.sqrt(dx * dx + dy * dy);
+    }
+
+    private float distanceFromDogCenterTo(float x, float y) {
+        float dx = x - dogCenterX();
+        float dy = y - dogCenterY();
+        return (float) Math.sqrt(dx * dx + dy * dy);
+    }
+
+    private float dogCenterX() {
+        return dog.getX() + dog.getHitboxOffsetX() + dog.getHitboxWidth() / 2f;
+    }
+
+    private float dogCenterY() {
+        return dog.getY() + dog.getHitboxOffsetY() + dog.getHitboxHeight() / 2f;
+    }
+
+    private float dogOriginAtPlayerCenterX(Player player) {
+        return dogOriginAtPointX(player.getX() + player.getHitboxOffsetX() + player.getHitboxWidth() / 2f);
+    }
+
+    private float dogOriginAtPlayerCenterY(Player player) {
+        return dogOriginAtPointY(player.getY() + player.getHitboxOffsetY() + player.getHitboxHeight() / 2f);
+    }
+
+    private float dogOriginAtPointX(float centerX) {
+        return centerX - dog.getHitboxOffsetX() - dog.getHitboxWidth() / 2f;
+    }
+
+    private float dogOriginAtPointY(float centerY) {
+        return centerY - dog.getHitboxOffsetY() - dog.getHitboxHeight() / 2f;
     }
 
     /**

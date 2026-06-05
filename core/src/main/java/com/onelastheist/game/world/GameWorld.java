@@ -9,6 +9,7 @@ import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.npc.HomeOwner;
 import com.onelastheist.game.entity.player.Player;
 import com.onelastheist.game.environment.DroppedMeat;
+import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
 import com.onelastheist.game.item.Inventory;
 import com.onelastheist.game.item.Item;
@@ -55,6 +56,7 @@ public class GameWorld implements Disposable {
 
     private WorldFactory.MapBundle exterior;
     private WorldFactory.MapBundle interior;
+    private WorldFactory.MapBundle sideHouse;
     private WorldFactory.MapBundle active;
     /** True while the interior map is active. */
     private boolean inInterior;
@@ -66,9 +68,11 @@ public class GameWorld implements Disposable {
 
     /** The dog's brain, alive only on the interior map. Recreated when the interior bundle is built. */
     private DogBrain dogBrain;
-    /** Pre-placed meat the player can pick up. Per-map, like dropped meat. */
+    /** Pre-placed meat the player can pick up in the main house. */
     private final List<MeatPickup> interiorPickups = new ArrayList<>();
-    /** Meat the player has dropped on the interior floor. */
+    /** Pre-placed keys the player can pick up in the active map. */
+    private final List<KeyPickup> keyPickups = new ArrayList<>();
+    /** Meat the player has dropped on the main-house floor. */
     private final List<DroppedMeat> interiorDroppedMeat = new ArrayList<>();
 
     public GameWorld(WorldFactory factory, BalanceConfig balance, Player player, HomeOwner homeOwner, Dog dog,
@@ -93,7 +97,7 @@ public class GameWorld implements Disposable {
      */
     public void update(float deltaSeconds) {
         clock.update(deltaSeconds);
-        if (inInterior && dogBrain != null) {
+        if (isInMainInterior() && dogBrain != null) {
             dogBrain.update(deltaSeconds, player, interiorDroppedMeat);
             for (Iterator<DroppedMeat> it = interiorDroppedMeat.iterator(); it.hasNext(); ) {
                 if (it.next().isConsumed()) it.remove();
@@ -128,7 +132,7 @@ public class GameWorld implements Disposable {
      * a dropped chunk lets the player reclaim it.
      */
     public boolean tryPickUpMeat() {
-        if (!inInterior) return false;
+        if (!isInMainInterior()) return false;
         float pcx = player.getX() + player.getHitboxOffsetX() + player.getHitboxWidth() / 2f;
         float pcy = player.getY() + player.getHitboxOffsetY() + player.getHitboxHeight() / 2f;
         // Pre-placed pickups first.
@@ -158,13 +162,31 @@ public class GameWorld implements Disposable {
         return false;
     }
 
+    /** Pick up the closest key the player is standing on, if any. */
+    public boolean tryPickUpKey() {
+        if (keyPickups.isEmpty()) return false;
+        float pcx = player.getX() + player.getHitboxOffsetX() + player.getHitboxWidth() / 2f;
+        float pcy = player.getY() + player.getHitboxOffsetY() + player.getHitboxHeight() / 2f;
+        for (Iterator<KeyPickup> it = keyPickups.iterator(); it.hasNext(); ) {
+            KeyPickup pickup = it.next();
+            float dx = pickup.getX() - pcx;
+            float dy = pickup.getY() - pcy;
+            if (dx * dx + dy * dy <= 48f * 48f) {
+                pickup.collectInto(player.getInventory());
+                it.remove();
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Drop a piece of meat from the player's inventory at their feet. No-op if
      * they aren't carrying any. Drugged meat is preferred — drops only the
      * drugged stack first since that's what the player actually intends to use.
      */
     public boolean tryDropMeat() {
-        if (!inInterior) return false;
+        if (!isInMainInterior()) return false;
         Inventory inv = player.getInventory();
         Meat toDrop = null;
         for (Item item : inv.getItems()) {
@@ -209,6 +231,8 @@ public class GameWorld implements Disposable {
             dogBrain = new DogBrain(dog, balance, interior.dogWanderBounds, interior.collisionMap);
             interiorPickups.clear();
             interiorPickups.addAll(interior.meatPickups);
+            keyPickups.clear();
+            keyPickups.addAll(interior.keyPickups);
         }
         exteriorReturnX = player.getX();
         exteriorReturnY = player.getY();
@@ -219,6 +243,20 @@ public class GameWorld implements Disposable {
         // Wipe any meat dropped on a previous interior visit; the dog should
         // not chase week-old chunks of meat across loads.
         interiorDroppedMeat.clear();
+    }
+
+    /** Enter the small storage-house interior after its exterior door is unlocked. */
+    public void enterSideHouse() {
+        if (inInterior) return;
+        if (sideHouse == null) {
+            sideHouse = factory.loadSideHouseBundle();
+        }
+        exteriorReturnX = player.getX();
+        exteriorReturnY = player.getY();
+        active = sideHouse;
+        inInterior = true;
+        mapVersion++;
+        player.setPosition(sideHouse.spawnX, sideHouse.spawnY);
     }
 
     /**
@@ -245,14 +283,19 @@ public class GameWorld implements Disposable {
     public CollisionMap getCollisionMap() { return active.collisionMap; }
     public List<Door> getDoors() { return active.doors == null ? Collections.<Door>emptyList() : active.doors; }
     public boolean isInInterior() { return inInterior; }
+    public boolean isInMainInterior() { return inInterior && active == interior; }
+    public boolean hasActiveDog() { return isInMainInterior() && dog.isVisible(); }
+    public boolean hasSideHouseKey() { return player.getInventory().containsItem(WorldFactory.SIDE_HOUSE_KEY_ID); }
     public int getMapVersion() { return mapVersion; }
-    public List<MeatPickup> getInteriorPickups() { return Collections.unmodifiableList(interiorPickups); }
-    public List<DroppedMeat> getInteriorDroppedMeat() { return Collections.unmodifiableList(interiorDroppedMeat); }
+    public List<MeatPickup> getInteriorPickups() { return isInMainInterior() ? Collections.unmodifiableList(interiorPickups) : Collections.<MeatPickup>emptyList(); }
+    public List<DroppedMeat> getInteriorDroppedMeat() { return isInMainInterior() ? Collections.unmodifiableList(interiorDroppedMeat) : Collections.<DroppedMeat>emptyList(); }
+    public List<KeyPickup> getKeyPickups() { return isInMainInterior() ? Collections.unmodifiableList(keyPickups) : Collections.<KeyPickup>emptyList(); }
 
     /** Releases every loaded TiledMap. Other fields are POJOs that the GC handles. */
     @Override
     public void dispose() {
         if (exterior != null && exterior.tiledMap != null) exterior.tiledMap.dispose();
         if (interior != null && interior.tiledMap != null) interior.tiledMap.dispose();
+        if (sideHouse != null && sideHouse.tiledMap != null) sideHouse.tiledMap.dispose();
     }
 }
