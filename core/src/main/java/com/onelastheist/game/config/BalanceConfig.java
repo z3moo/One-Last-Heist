@@ -16,8 +16,8 @@ public class BalanceConfig {
     // ---- Dog AI tuning ----
     /** World units / second when the dog patrols. Slower than {@link com.onelastheist.game.entity.player.Player#WALK_SPEED}=360 so a calm sweep reads as patrol, not pursuit. */
     public final float dogWanderSpeed = 220f;
-    /** World units / second when the dog has heard or smelled the player and is closing on a target. Slightly above the player's walk speed so an upright player gets caught. */
-    public final float dogChaseSpeed = 420f;
+    /** World units / second when the dog has heard or smelled the player and is closing on a target. Just above the player's 360 walk speed so a careless player gets caught, but a player who pivots/crouches has room to escape. */
+    public final float dogChaseSpeed = 380f;
     /** Lower bound (seconds) the dog stays in the WANDERING state before lying down. */
     public final float dogWanderMinSeconds = 10f;
     /** Upper bound (seconds) the dog stays in the WANDERING state before lying down. */
