@@ -24,6 +24,9 @@ import com.onelastheist.game.world.Door;
 import com.onelastheist.game.world.GameWorld;
 import com.onelastheist.game.world.WorldFactory;
 
+import static com.onelastheist.game.world.WorldFactory.EXTERIOR_MAP_ID;
+import static com.onelastheist.game.world.WorldFactory.MAIN_HOUSE_INTERIOR_ID;
+
 /**
  * Gameplay screen. Owns the LibGDX lifecycle for an active heist run and
  * delegates simulation to the domain layer ({@link GameWorld}, {@link PlayerController}).
@@ -46,10 +49,19 @@ import com.onelastheist.game.world.WorldFactory;
 public class PlayScreen extends ScreenAdapter {
     private static final float WORLD_WIDTH = 1920f;
     private static final float WORLD_HEIGHT = 1080f;
-    private static final float MAP_WIDTH = 60f * 16f * 3f;
-    private static final float MAP_HEIGHT = 40f * 16f * 3f;
     private static final float ACTOR_DRAW_SIZE = 144f;
     private static final float ACTOR_CENTER_OFFSET = ACTOR_DRAW_SIZE / 2f;
+    /**
+     * Camera zoom while in {@link PlayPhase#GAME}. The {@link FitViewport} is
+     * authored at 1920x1080 wu and the interior map is 4080x3840 wu, so a
+     * zoom of 1.0 frames nearly half the house at once and reduces the
+     * stealth game to "see everything from the doorway." 0.5 cuts the
+     * visible region in half on each axis (showing ~20×11 tiles), which
+     * forces the player to actually explore.
+     */
+    private static final float GAME_CAMERA_ZOOM = 0.5f;
+    /** Zoom for non-GAME phases (tutorial / pause splash). 1.0 keeps the legacy framing. */
+    private static final float MENU_CAMERA_ZOOM = 1.0f;
     private static final float MAP_START_X = 520f;
     private static final float MAP_START_Y = 280f;
     private static final float TUTORIAL_START_X = 280f;
@@ -235,6 +247,20 @@ public class PlayScreen extends ScreenAdapter {
         if (activeDoor != null && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
             triggerDoor(activeDoor);
         }
+        // F: pick up the meat the player is standing on. Cheap to call every
+        // frame the key is just-pressed; world.tryPickUpMeat() is a no-op when
+        // there's nothing under the player or we're outdoors.
+        if (Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
+            if (world.tryPickUpMeat()) {
+                Gdx.app.log("PlayScreen", "Picked up meat");
+            }
+        }
+        // G: drop a piece of meat at the player's feet. Same approach as F.
+        if (Gdx.input.isKeyJustPressed(context.getControlConfig().dropMeat)) {
+            if (world.tryDropMeat()) {
+                Gdx.app.log("PlayScreen", "Dropped meat");
+            }
+        }
     }
 
     private void triggerDoor(Door door) {
@@ -244,8 +270,23 @@ public class PlayScreen extends ScreenAdapter {
             Gdx.app.log("PlayScreen", "Door locked: " + door.getTargetMapId());
             return;
         }
-        // TODO: thay log nay bang navigator.showInteriorScreen(door.getTargetMapId()) khi import map noi that.
-        Gdx.app.log("PlayScreen", "Door interact -> " + door.getTargetMapId());
+        // Map swaps in place — same screen, same WorldRenderer instance, just a
+        // different active TiledMap and door list. Clearing activeDoor avoids
+        // drawing a stale prompt for one frame at the new player position.
+        String targetMapId = door.getTargetMapId();
+        if (MAIN_HOUSE_INTERIOR_ID.equals(targetMapId)) {
+            world.enterInterior();
+            activeDoor = null;
+            lockedFlashTimer = 0f;
+            return;
+        }
+        if (EXTERIOR_MAP_ID.equals(targetMapId)) {
+            world.returnToExterior();
+            activeDoor = null;
+            lockedFlashTimer = 0f;
+            return;
+        }
+        Gdx.app.log("PlayScreen", "Door interact -> " + targetMapId);
     }
 
     private void clampTutorialPlayer() {
@@ -606,7 +647,7 @@ public class PlayScreen extends ScreenAdapter {
     private String cardDescription(int index) {
         switch (index) {
             case 0: return "Walk in 8 directions";
-            case 1: return "F: pick up    E: interact";
+            case 1: return "F: pick up    E: interact    G: drop item";
             case 2: return "Crouch and walk quietly";
             case 3: return "Open the menu";
             default: return "";
@@ -616,7 +657,7 @@ public class PlayScreen extends ScreenAdapter {
     private String[][] cardKeys(int index) {
         switch (index) {
             case 0: return new String[][] { {"", "W", ""}, {"A", "S", "D"} };
-            case 1: return new String[][] { {"F", "E"} };
+            case 1: return new String[][] { {"F", "E", "G"} };
             case 2: return new String[][] { {"CTRL"} };
             case 3: return new String[][] { {"ESC"} };
             default: return new String[0][];
@@ -687,30 +728,39 @@ public class PlayScreen extends ScreenAdapter {
     private void updateCamera() {
         OrthographicCamera camera = (OrthographicCamera) viewport.getCamera();
         if (phase != PlayPhase.GAME) {
+            camera.zoom = MENU_CAMERA_ZOOM;
             camera.position.set(WORLD_WIDTH / 2f, WORLD_HEIGHT / 2f, 0f);
             camera.update();
             return;
         }
 
-        float halfWidth = camera.viewportWidth / 2f;
-        float halfHeight = camera.viewportHeight / 2f;
+        // Zoom is applied to the visible region, so the camera-clamp half-extents
+        // and the world-edge clamp both have to honor it. With zoom 0.5 the
+        // camera shows a 960×540 wu slice — that's the half-extents below.
+        camera.zoom = GAME_CAMERA_ZOOM;
+        float halfWidth = camera.viewportWidth * camera.zoom / 2f;
+        float halfHeight = camera.viewportHeight * camera.zoom / 2f;
         float targetX = world.getPlayer().getX() + ACTOR_CENTER_OFFSET;
         float targetY = world.getPlayer().getY() + ACTOR_CENTER_OFFSET;
 
+        // Read map size from the active collision map so the camera clamp adapts
+        // when the player swaps between exterior (60x40 tiles) and interior (85x80).
+        float mapWidth = world.getCollisionMap().getWorldWidth();
+        float mapHeight = world.getCollisionMap().getWorldHeight();
         camera.position.set(
-            MathUtils.clamp(targetX, halfWidth, MAP_WIDTH - halfWidth),
-            MathUtils.clamp(targetY, halfHeight, MAP_HEIGHT - halfHeight),
+            MathUtils.clamp(targetX, halfWidth, mapWidth - halfWidth),
+            MathUtils.clamp(targetY, halfHeight, mapHeight - halfHeight),
             0f
         );
         camera.update();
     }
 
     private float getCameraLeft(OrthographicCamera camera) {
-        return camera.position.x - camera.viewportWidth / 2f;
+        return camera.position.x - camera.viewportWidth * camera.zoom / 2f;
     }
 
     private float getCameraBottom(OrthographicCamera camera) {
-        return camera.position.y - camera.viewportHeight / 2f;
+        return camera.position.y - camera.viewportHeight * camera.zoom / 2f;
     }
 
     private Texture loadTexture(String path) {

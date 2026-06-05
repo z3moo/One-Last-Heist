@@ -30,4 +30,14 @@ public class Player extends MovableEntity {
     public void hide() { state = PlayerState.HIDING; }
     public void leaveHiding() { state = PlayerState.NORMAL; }
     public void catchPlayer() { state = PlayerState.CAUGHT; }
+
+    /**
+     * True when the player is generating audible footsteps this frame: walking
+     * upright. Crouch silences movement, and a stationary player makes no
+     * noise at all. Sensed by NPC AI (e.g. {@link com.onelastheist.game.ai.DogBrain})
+     * to decide whether to investigate.
+     */
+    public boolean isMakingNoise() {
+        return isMoving() && !crouching;
+    }
 }
