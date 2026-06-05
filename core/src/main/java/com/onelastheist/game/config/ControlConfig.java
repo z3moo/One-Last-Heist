@@ -16,4 +16,5 @@ public class ControlConfig {
     public final int crouch = Input.Keys.CONTROL_LEFT;
     public final int interact = Input.Keys.E;
     public final int collect = Input.Keys.F;
+    public final int dropMeat = Input.Keys.G;
 }

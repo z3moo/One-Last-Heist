@@ -4,5 +4,7 @@ public enum ItemType {
     MONEY,
     KEY,
     WEAPON,
-    EVIDENCE
+    EVIDENCE,
+    CONSUMABLE
 }
+
