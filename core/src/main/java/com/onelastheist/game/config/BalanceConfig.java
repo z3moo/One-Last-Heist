@@ -19,11 +19,11 @@ public class BalanceConfig {
     /** World units / second when the dog has heard or smelled the player and is closing on a target. Just above the player's 360 walk speed so a careless player gets caught, but a player who pivots/crouches has room to escape. */
     public final float dogChaseSpeed = 380f;
     /** Lower bound (seconds) the dog stays in the WANDERING state before lying down. */
-    public final float dogWanderMinSeconds = 10f;
+    public final float dogWanderMinSeconds = 20f;
     /** Upper bound (seconds) the dog stays in the WANDERING state before lying down. */
-    public final float dogWanderMaxSeconds = 15f;
+    public final float dogWanderMaxSeconds = 20f;
     /** Lower bound (seconds) of a normal nap before the dog wakes and wanders again. */
-    public final float dogSleepMinSeconds = 10f;
+    public final float dogSleepMinSeconds = 15f;
     /** Upper bound (seconds) of a normal nap before the dog wakes and wanders again. */
     public final float dogSleepMaxSeconds = 15f;
     /** Lower bound (seconds) of meat-induced deep sleep — cannot be interrupted. */

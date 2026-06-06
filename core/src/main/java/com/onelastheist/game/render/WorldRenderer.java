@@ -90,31 +90,46 @@ public class WorldRenderer implements Disposable {
      *
      * <p>Tokens covered:
      * <ul>
-     *   <li>"wall" — every wall tile layer (walls, wall_top, walls_top,
+     *   <li>"wall" — interior wall tile layers (walls, wall_top, walls_top,
      *       wall_decor, wall_top2). All wall art needs Y-sort: a player
      *       whose foot is below a wall cell's bottom (south) draws ON TOP,
      *       while a player whose foot is above (north, inside the room)
      *       draws BEHIND.</li>
-     *   <li>"bathroom" — bathroom-furniture tile layer carries tubs/toilets/
-     *       sinks (multi-row tall fixtures). They must occlude the player
-     *       when stepped behind.</li>
-     *   <li>"overhead" — despite the name, the interior {@code overhead} and
-     *       {@code overhead_decor} layers carry the north-face wall art of
-     *       upper rooms; {@code object_overhead} carries tall furniture
-     *       tops (plants, bookcases, stuffed animals). All three need
-     *       Y-sort, not always-on-top — otherwise upper rooms appear
-     *       sealed by an "invisible wall" that the player can never step
-     *       in front of.</li>
+     *   <li>"bathroom" — bathroom-furniture tile layer (interior).</li>
+     *   <li>"overhead" — interior {@code overhead} / {@code overhead_decor}
+     *       carry north-face wall art; {@code object_overhead} carries tall
+     *       furniture; exterior {@code Overhead_Foreground} carries above-
+     *       player rooftops. All Y-sort with run-bottom anchors.</li>
      * </ul>
      *
-     * <p>If a future map adds a true ceiling-canopy layer (player walks
-     * <em>under</em> it, e.g. a doorway top), introduce a separate
-     * always-over-actors post-pass with its own token list.
+     * <p>Exterior {@code House_demo}, {@code House_demo2}, {@code House2},
+     * and {@code Fence} are intentionally NOT here. Routing them through
+     * Y-sort would force the player behind them when north of the house
+     * — the desired effect — but the run-bottom anchor sweep mis-orders
+     * column tiles in some house rows because the house tile layers
+     * include short ground-level decor cells south of the body, which
+     * extend the run further south than the body's actual face. The
+     * cleanest fix is to leave the houses in the floor pass (under
+     * actors, exactly as before) and rely on the artist's existing
+     * {@code Overhead_Foreground} layer for "behind the roof" occlusion.
      */
     private static final String[] Y_SORT_LAYER_TOKENS = {
         "wall",
         "bathroom",
         "overhead",
+    };
+    /**
+     * Layer-name substrings drawn AFTER the Y-sort pass — always on top of
+     * every actor regardless of foot Y. Used for the artist's intentional
+     * "foreground over player" layers like the exterior's
+     * {@code Overhead_Foreground} (rooftop trim that should hide the player
+     * walking behind a house). The interior layers named "overhead" are NOT
+     * canopies — they're north-face wall art and stay in Y-sort via the
+     * "overhead" token in {@link #Y_SORT_LAYER_TOKENS}; this list uses
+     * "foreground" specifically so they don't double-route.
+     */
+    private static final String[] OVERHEAD_LAYER_TOKENS = {
+        "foreground",
     };
     /** Object group whose name (case-insensitive) matches this is collision-only and never rendered. */
     private static final String COLLISION_LAYER_NAME = "collisions";
@@ -143,6 +158,8 @@ public class WorldRenderer implements Disposable {
     private final List<LayerOp> floorPass = new ArrayList<>();
     /** Static (map-derived) Y-sortable items. Built once per map; reused every frame. */
     private final List<YSortItem> staticYSortItems = new ArrayList<>();
+    /** Map layers drawn AFTER the Y-sort pass — always on top of actors. Currently just the exterior's Overhead_Foreground rooftop trim. */
+    private final List<LayerOp> overheadPass = new ArrayList<>();
     /** Reused render list combining static Y-sort items + per-frame actor items. Cleared and refilled each frame. */
     private final List<YSortItem> frameYSortBuffer = new ArrayList<>();
     /** Sort highest anchor Y first, lowest last — so southernmost (visually nearest) items draw on top. */
@@ -178,11 +195,14 @@ public class WorldRenderer implements Disposable {
     }
 
     /**
-     * Frame entry point. Draws floor map layers, then a single Y-sorted
-     * pass containing wall/cap/overhead tiles, every furniture object, and
-     * actors interleaved by foot Y. There is intentionally no
-     * "always-on-top" overhead pass: every layer either sits under the
-     * player (floor pass) or interleaves with the player by Y (Y-sort pass).
+     * Frame entry point. Draws three passes:
+     * <ol>
+     *   <li>Floor pass — floors and decor under the player.</li>
+     *   <li>Y-sort pass — walls, furniture, and actors interleaved by foot Y.</li>
+     *   <li>Overhead pass — artist-flagged "Foreground" rooftop trim that
+     *       always draws on top, so the player walking behind a house is
+     *       visibly hidden by its roof.</li>
+     * </ol>
      */
     public void render(float deltaSeconds, OrthographicCamera camera) {
         stateTime += deltaSeconds;
@@ -207,6 +227,8 @@ public class WorldRenderer implements Disposable {
         } finally {
             sortBatch.end();
         }
+
+        runPlan(overheadPass);
     }
 
     public void renderPlayerOnly(float deltaSeconds, OrthographicCamera camera) {
@@ -250,14 +272,16 @@ public class WorldRenderer implements Disposable {
 
     /**
      * Build (or rebuild) the OrthogonalTiledMapRenderer plus the floor pass
-     * plan and the static Y-sort item list for the world's currently-active
-     * TiledMap. Called at construction and whenever the map version changes.
+     * plan, the static Y-sort item list, and the overhead post-pass for the
+     * world's currently-active TiledMap. Called at construction and whenever
+     * the map version changes.
      *
      * <p>Classification per top-level layer:
      * <ul>
-     *   <li>Collision-only group → skip</li>
-     *   <li>Y-sort-named layer (wall/bathroom/overhead) or any object group with tile objects → Y-sort</li>
-     *   <li>Otherwise → floor pass (always under actors)</li>
+     *   <li>Collision-only group → skip.</li>
+     *   <li>Name matches an overhead/foreground token → overhead pass (always over actors).</li>
+     *   <li>Name matches a Y-sort token, or it's an object group with tile objects → Y-sort.</li>
+     *   <li>Otherwise → floor pass (always under actors).</li>
      * </ul>
      */
     private void rebuildMapRenderer() {
@@ -267,13 +291,17 @@ public class WorldRenderer implements Disposable {
 
         floorPass.clear();
         staticYSortItems.clear();
+        overheadPass.clear();
         MapLayers layers = activeMap.getLayers();
         for (int i = 0, n = layers.getCount(); i < n; i++) {
             MapLayer layer = layers.get(i);
             String name = layer.getName();
             if (isCollisionLayer(name) || isCollisionOnlyGroup(layer)) continue;
 
-            if (matchesYSortLayer(name) || hasTileObjects(layer)) {
+            if (matchesOverheadLayer(name)) {
+                LayerOp op = classifyFloorLayer(layer, i);
+                if (op != null) overheadPass.add(op);
+            } else if (matchesYSortLayer(name) || hasTileObjects(layer)) {
                 addYSortItemsFromLayer(layer, i);
             } else {
                 LayerOp op = classifyFloorLayer(layer, i);
@@ -291,6 +319,15 @@ public class WorldRenderer implements Disposable {
         if (name == null) return false;
         String lower = name.toLowerCase();
         for (String token : Y_SORT_LAYER_TOKENS) {
+            if (lower.contains(token)) return true;
+        }
+        return false;
+    }
+
+    private static boolean matchesOverheadLayer(String name) {
+        if (name == null) return false;
+        String lower = name.toLowerCase();
+        for (String token : OVERHEAD_LAYER_TOKENS) {
             if (lower.contains(token)) return true;
         }
         return false;

@@ -2,6 +2,7 @@ package com.onelastheist.game.screen;
 
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.Input;
+import com.badlogic.gdx.InputAdapter;
 import com.badlogic.gdx.ScreenAdapter;
 import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
@@ -19,10 +20,15 @@ import com.badlogic.gdx.utils.viewport.Viewport;
 import com.onelastheist.game.app.GameContext;
 import com.onelastheist.game.app.ScreenNavigator;
 import com.onelastheist.game.entity.player.PlayerController;
+import com.onelastheist.game.item.Item;
+import com.onelastheist.game.item.ItemType;
 import com.onelastheist.game.render.WorldRenderer;
 import com.onelastheist.game.world.Door;
 import com.onelastheist.game.world.GameWorld;
 import com.onelastheist.game.world.WorldFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.onelastheist.game.world.WorldFactory.EXTERIOR_MAP_ID;
 import static com.onelastheist.game.world.WorldFactory.MAIN_HOUSE_INTERIOR_ID;
@@ -81,21 +87,26 @@ public class PlayScreen extends ScreenAdapter {
     private static final float PANEL_X = (WORLD_WIDTH - PANEL_WIDTH) / 2f;
     private static final float PANEL_Y = (WORLD_HEIGHT - PANEL_HEIGHT) / 2f;
 
-    // Operation manual layout. Four cards in a row, identical internal geometry so
-    // key shapes and key labels share anchors and always line up.
-    private static final int CARD_COUNT = 4;
-    private static final float CARD_WIDTH = 380f;
+    // Operation manual layout. Five cards in a row, identical internal geometry
+    // so key shapes and key labels share anchors and always line up. Card width
+    // is sized so all five fit on a 1920-wu authoring viewport with a small gap.
+    private static final int CARD_COUNT = 5;
+    private static final float CARD_WIDTH = 340f;
     private static final float CARD_HEIGHT = 340f;
-    private static final float CARD_GAP = 36f;
+    private static final float CARD_GAP = 25f;
     private static final float CARD_BOTTOM = 560f;
     private static final float CARDS_LEFT =
         (WORLD_WIDTH - (CARD_COUNT * CARD_WIDTH + (CARD_COUNT - 1) * CARD_GAP)) / 2f;
     private static final float CARD_HEADER_HEIGHT = 70f;
-    private static final float CARD_FOOTER_HEIGHT = 90f;
-    private static final float KEY_SIZE = 70f;
+    /** Bottom area of each card holds the description. Taller than before so the bigger description font has breathing room. */
+    private static final float CARD_FOOTER_HEIGHT = 108f;
+    /** Per-key icon size. Slightly smaller than the original 70wu — "smaller, just a bit". */
+    private static final float KEY_SIZE = 60f;
     private static final float KEY_GAP = 8f;
     private static final float KEY_AREA_CENTER_Y =
         CARD_BOTTOM + (CARD_FOOTER_HEIGHT + CARD_HEIGHT - CARD_HEADER_HEIGHT) / 2f;
+    /** Text scale for card description ("F: pick up", etc.). Bumped from 0.95 so functions read clearly at a glance. */
+    private static final float CARD_DESCRIPTION_SCALE = 1.15f;
 
     // Door interaction prompt.
     private static final float DOOR_INTERACT_RADIUS = 40f;
@@ -106,6 +117,24 @@ public class PlayScreen extends ScreenAdapter {
     private static final float PROMPT_HEIGHT = 78f;
     private static final float PROMPT_VERTICAL_OFFSET = 188f;
     private static final float LOCKED_FLASH_DURATION = 1.1f;
+
+    // Hotbar layout. Drawn at the bottom-center of the screen, fixed eight
+    // slots — same height/width regardless of how many items the player carries
+    // so the bar feels stable. Filled left-to-right; the selected slot is
+    // highlighted gold and the item name is shown floating above the bar
+    // briefly each time the selection changes.
+    private static final int HOTBAR_SLOT_COUNT = 5;
+    private static final float HOTBAR_SLOT_SIZE = 36f;
+    private static final float HOTBAR_SLOT_GAP = 5f;
+    private static final float HOTBAR_PADDING = 6f;
+    private static final float HOTBAR_BOTTOM_MARGIN = 14f;
+    private static final float HOTBAR_ITEM_DRAW = 28f;
+    private static final float HOTBAR_LABEL_OFFSET = 10f;
+    private static final float HOTBAR_LABEL_HEIGHT = 22f;
+    /** How long (seconds) the floating item-name label stays visible after the player changes the selection. */
+    private static final float HOTBAR_LABEL_DURATION = 2.2f;
+    /** Tail of the label-fade window (seconds) where alpha ramps from 1 to 0. */
+    private static final float HOTBAR_LABEL_FADE = 0.45f;
 
     private final GameContext context;
     private final ScreenNavigator navigator;
@@ -136,6 +165,14 @@ public class PlayScreen extends ScreenAdapter {
     private float lockedFlashTimer;
     private Door activeDoor;
     private boolean paused;
+    /** Selected hotbar slot index. Bounded to [0, HOTBAR_SLOT_COUNT). */
+    private int hotbarSelection;
+    /** Seconds remaining the floating item-name label is visible. Reset on each scroll/selection change. */
+    private float hotbarLabelTimer;
+    /** Reused buffer of player inventory items relevant to the hotbar. Refreshed every frame. */
+    private final List<Item> hotbarItems = new ArrayList<>();
+    private Texture hotbarMeatTexture;
+    private Texture hotbarKeyTexture;
 
     public PlayScreen(GameContext context, ScreenNavigator navigator) {
         this.context = context;
@@ -163,6 +200,28 @@ public class PlayScreen extends ScreenAdapter {
         menuNormalTexture = loadTexture("start_screen/button_backtomenu/btn_backtm_normal.png");
         menuHoverTexture = loadTexture("start_screen/button_backtomenu/btn_backtm_hover.png");
         menuPressedTexture = loadTexture("start_screen/button_backtomenu/btn_backtm_pressed.png");
+        // The hotbar shares item art with the world renderer, but the renderer's
+        // textures are private to it. Loading our own copies keeps the hotbar
+        // self-contained and means we don't depend on render-internal assets.
+        hotbarMeatTexture = loadTexture("items/meat.png");
+        hotbarKeyTexture = loadTexture("items/key.png");
+        // Mouse wheel changes the selected hotbar slot. Set as the screen's
+        // input processor — the rest of input goes through Gdx.input polling
+        // which doesn't depend on the registered processor, so this doesn't
+        // disturb keyboard / click handling.
+        Gdx.input.setInputProcessor(new InputAdapter() {
+            @Override
+            public boolean scrolled(float amountX, float amountY) {
+                if (phase != PlayPhase.GAME || paused) return false;
+                // amountY is positive when the wheel turns DOWN (toward user).
+                // Match a typical hotbar: wheel-down advances forward through
+                // the slots, wheel-up goes back.
+                int delta = amountY > 0f ? 1 : -1;
+                hotbarSelection = Math.floorMod(hotbarSelection + delta, HOTBAR_SLOT_COUNT);
+                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+                return true;
+            }
+        });
         updateOverlayLayout();
     }
 
@@ -185,6 +244,7 @@ public class PlayScreen extends ScreenAdapter {
             if (activeDoor != null) {
                 drawDoorPrompt((OrthographicCamera) viewport.getCamera(), activeDoor);
             }
+            drawHotbar((OrthographicCamera) viewport.getCamera());
         } else {
             drawTutorialScreen(delta);
         }
@@ -217,6 +277,8 @@ public class PlayScreen extends ScreenAdapter {
         if (menuNormalTexture != null) menuNormalTexture.dispose();
         if (menuHoverTexture != null) menuHoverTexture.dispose();
         if (menuPressedTexture != null) menuPressedTexture.dispose();
+        if (hotbarMeatTexture != null) hotbarMeatTexture.dispose();
+        if (hotbarKeyTexture != null) hotbarKeyTexture.dispose();
         if (tutorialFont != null) tutorialFont.dispose();
     }
 
@@ -244,6 +306,7 @@ public class PlayScreen extends ScreenAdapter {
         world.update(delta);
         promptTimer += delta;
         if (lockedFlashTimer > 0f) lockedFlashTimer -= delta;
+        if (hotbarLabelTimer > 0f) hotbarLabelTimer -= delta;
         activeDoor = world.findActiveDoor(DOOR_INTERACT_RADIUS);
         if (activeDoor != null && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
             triggerDoor(activeDoor);
@@ -252,14 +315,17 @@ public class PlayScreen extends ScreenAdapter {
         if (Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
             if (world.tryPickUpKey()) {
                 Gdx.app.log("PlayScreen", "Picked up key");
+                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
             } else if (world.tryPickUpMeat()) {
                 Gdx.app.log("PlayScreen", "Picked up meat");
+                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
             }
         }
         // G: drop a piece of meat at the player's feet. Same approach as F.
         if (Gdx.input.isKeyJustPressed(context.getControlConfig().dropMeat)) {
             if (world.tryDropMeat()) {
                 Gdx.app.log("PlayScreen", "Dropped meat");
+                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
             }
         }
     }
@@ -480,6 +546,147 @@ public class PlayScreen extends ScreenAdapter {
         );
     }
 
+    /**
+     * Bottom-of-screen hotbar. Fixed eight slots — the player's KEY and
+     * CONSUMABLE items spill into them in inventory order. The selected slot
+     * gets a gold highlight; the selected item's name floats in a small panel
+     * above the bar with a tail pointing down at it. Scroll-wheel handling
+     * lives in {@link #show()}'s InputAdapter.
+     *
+     * <p>Renders in world-space using the same projection as the rest of the
+     * UI overlays (door prompt, pause panel) so we don't need a second camera
+     * or viewport. Coordinates are anchored to the camera's bottom-center;
+     * with the gameplay zoom of 0.5 the visible width is 960 wu, so the bar
+     * comes out around 656 wu wide and stays roughly centred on screen.
+     */
+    private void drawHotbar(OrthographicCamera camera) {
+        refreshHotbarItems();
+
+        float visibleWidth = camera.viewportWidth * camera.zoom;
+        float left = getCameraLeft(camera);
+        float bottom = getCameraBottom(camera);
+
+        float slotsRun = HOTBAR_SLOT_COUNT * HOTBAR_SLOT_SIZE + (HOTBAR_SLOT_COUNT - 1) * HOTBAR_SLOT_GAP;
+        float barWidth = slotsRun + HOTBAR_PADDING * 2f;
+        float barHeight = HOTBAR_SLOT_SIZE + HOTBAR_PADDING * 2f;
+        float barX = left + (visibleWidth - barWidth) / 2f;
+        float barY = bottom + HOTBAR_BOTTOM_MARGIN;
+
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+
+        // Drop shadow under the bar.
+        shapes.setColor(0f, 0f, 0f, 0.55f);
+        shapes.rect(barX + 6f, barY - 6f, barWidth, barHeight);
+        // Outer gold border + dark inner.
+        shapes.setColor(0.95f, 0.62f, 0.13f, 1f);
+        shapes.rect(barX, barY, barWidth, barHeight);
+        shapes.setColor(0.07f, 0.075f, 0.09f, 0.95f);
+        shapes.rect(barX + 4f, barY + 4f, barWidth - 8f, barHeight - 8f);
+
+        // Per-slot frames + selection highlight.
+        for (int i = 0; i < HOTBAR_SLOT_COUNT; i++) {
+            float slotX = barX + HOTBAR_PADDING + i * (HOTBAR_SLOT_SIZE + HOTBAR_SLOT_GAP);
+            float slotY = barY + HOTBAR_PADDING;
+            shapes.setColor(0.13f, 0.14f, 0.17f, 1f);
+            shapes.rect(slotX, slotY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE);
+            if (i == hotbarSelection) {
+                // 3-wu border around the selected slot. Drawn as four thin
+                // rects rather than a Line shape so the call stays inside the
+                // Filled batch and we don't pay an extra begin/end.
+                shapes.setColor(0.96f, 0.72f, 0.20f, 1f);
+                float t = 3f;
+                shapes.rect(slotX - t, slotY - t, HOTBAR_SLOT_SIZE + t * 2f, t);
+                shapes.rect(slotX - t, slotY + HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE + t * 2f, t);
+                shapes.rect(slotX - t, slotY, t, HOTBAR_SLOT_SIZE);
+                shapes.rect(slotX + HOTBAR_SLOT_SIZE, slotY, t, HOTBAR_SLOT_SIZE);
+            }
+        }
+        shapes.end();
+
+        // Item icons.
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        overlayBatch.setColor(Color.WHITE);
+        int filledCount = Math.min(HOTBAR_SLOT_COUNT, hotbarItems.size());
+        for (int i = 0; i < filledCount; i++) {
+            Texture texture = textureForItem(hotbarItems.get(i));
+            if (texture == null) continue;
+            float slotX = barX + HOTBAR_PADDING + i * (HOTBAR_SLOT_SIZE + HOTBAR_SLOT_GAP);
+            float slotY = barY + HOTBAR_PADDING;
+            float pad = (HOTBAR_SLOT_SIZE - HOTBAR_ITEM_DRAW) / 2f;
+            overlayBatch.draw(texture, slotX + pad, slotY + pad, HOTBAR_ITEM_DRAW, HOTBAR_ITEM_DRAW);
+        }
+        overlayBatch.end();
+
+        // Floating item-name label above the selected slot. Only visible for
+        // a short window after the player changes the selection or picks up /
+        // drops an item — long enough to read, short enough to stay out of
+        // the way during play. Alpha fades over the last HOTBAR_LABEL_FADE
+        // seconds of the window.
+        if (hotbarLabelTimer > 0f && hotbarSelection < hotbarItems.size()) {
+            float labelAlpha = MathUtils.clamp(hotbarLabelTimer / HOTBAR_LABEL_FADE, 0f, 1f);
+            Item selected = hotbarItems.get(hotbarSelection);
+            String label = selected.getName();
+            float slotX = barX + HOTBAR_PADDING + hotbarSelection * (HOTBAR_SLOT_SIZE + HOTBAR_SLOT_GAP);
+            float labelCenterX = slotX + HOTBAR_SLOT_SIZE / 2f;
+            float labelY = barY + barHeight + HOTBAR_LABEL_OFFSET;
+
+            tutorialFont.getData().setScale(0.7f);
+            tutorialLayout.setText(tutorialFont, label);
+            float labelWidth = tutorialLayout.width + 22f;
+            float labelHeight = HOTBAR_LABEL_HEIGHT;
+            float labelX = labelCenterX - labelWidth / 2f;
+
+            shapes.begin(ShapeRenderer.ShapeType.Filled);
+            shapes.setColor(0f, 0f, 0f, 0.55f * labelAlpha);
+            shapes.rect(labelX + 3f, labelY - 3f, labelWidth, labelHeight);
+            shapes.setColor(0.96f, 0.65f, 0.13f, labelAlpha);
+            shapes.rect(labelX, labelY, labelWidth, labelHeight);
+            shapes.setColor(0.07f, 0.075f, 0.09f, 0.95f * labelAlpha);
+            shapes.rect(labelX + 2f, labelY + 2f, labelWidth - 4f, labelHeight - 4f);
+            // Triangle tail pointing at the selected slot.
+            shapes.setColor(0.96f, 0.65f, 0.13f, labelAlpha);
+            shapes.triangle(labelCenterX - 6f, labelY + 2f,
+                labelCenterX + 6f, labelY + 2f,
+                labelCenterX, labelY - 7f);
+            shapes.end();
+
+            overlayBatch.begin();
+            drawTextInRect(label, labelX, labelY, labelWidth, labelHeight,
+                0.7f, new Color(1f, 0.85f, 0.45f, labelAlpha));
+            overlayBatch.end();
+        }
+    }
+
+    /**
+     * Refresh the hotbar's view of the player inventory. Only KEY and
+     * CONSUMABLE (= meat) items are shown — money/weapons/evidence belong on
+     * a stats HUD, not a usable-item bar.
+     */
+    private void refreshHotbarItems() {
+        hotbarItems.clear();
+        for (Item item : world.getPlayer().getInventory().getItems()) {
+            ItemType type = item.getType();
+            if (type == ItemType.KEY || type == ItemType.CONSUMABLE) {
+                hotbarItems.add(item);
+            }
+        }
+    }
+
+    private Texture textureForItem(Item item) {
+        switch (item.getType()) {
+            case KEY:
+                return hotbarKeyTexture;
+            case CONSUMABLE:
+                return hotbarMeatTexture;
+            default:
+                return null;
+        }
+    }
+
     private void drawTutorialScreen(float delta) {
         viewport.apply();
         OrthographicCamera camera = (OrthographicCamera) viewport.getCamera();
@@ -589,7 +796,8 @@ public class PlayScreen extends ScreenAdapter {
         Color keyColor = new Color(0.10f, 0.10f, 0.12f, 1f);
 
         drawTextInRect(cardTitle(index), x, headerY, CARD_WIDTH, CARD_HEADER_HEIGHT - 4f, 1.55f, titleColor);
-        drawTextInRect(cardDescription(index), x + 16f, y + 14f, CARD_WIDTH - 32f, CARD_FOOTER_HEIGHT - 28f, 0.95f, descColor);
+        drawTextInRect(cardDescription(index), x + 16f, y + 14f, CARD_WIDTH - 32f, CARD_FOOTER_HEIGHT - 28f,
+            CARD_DESCRIPTION_SCALE, descColor);
 
         // Key labels — recompute the same anchors as drawKeyClusterShape so text always lines up.
         String[][] rows = cardKeys(index);
@@ -648,9 +856,10 @@ public class PlayScreen extends ScreenAdapter {
     private String cardTitle(int index) {
         switch (index) {
             case 0: return "MOVE";
-            case 1: return "ACTIONS";
-            case 2: return "STEALTH";
-            case 3: return "PAUSE";
+            case 1: return "STEALTH";
+            case 2: return "ACTIONS";
+            case 3: return "SCROLL";
+            case 4: return "PAUSE";
             default: return "";
         }
     }
@@ -658,9 +867,10 @@ public class PlayScreen extends ScreenAdapter {
     private String cardDescription(int index) {
         switch (index) {
             case 0: return "Walk in 8 directions";
-            case 1: return "F: pick up    E: interact    G: drop item";
-            case 2: return "Crouch and walk quietly";
-            case 3: return "Open the menu";
+            case 1: return "Crouch to walk quietly";
+            case 2: return "Pick up · Interact · Drop";
+            case 3: return "Cycle inventory items";
+            case 4: return "Open the menu";
             default: return "";
         }
     }
@@ -668,17 +878,19 @@ public class PlayScreen extends ScreenAdapter {
     private String[][] cardKeys(int index) {
         switch (index) {
             case 0: return new String[][] { {"", "W", ""}, {"A", "S", "D"} };
-            case 1: return new String[][] { {"F", "E", "G"} };
-            case 2: return new String[][] { {"CTRL"} };
-            case 3: return new String[][] { {"ESC"} };
+            case 1: return new String[][] { {"CTRL"} };
+            case 2: return new String[][] { {"F", "E", "G"} };
+            case 3: return new String[][] { {"WHEEL"} };
+            case 4: return new String[][] { {"ESC"} };
             default: return new String[0][];
         }
     }
 
     private float keyWidth(String key) {
         if (key.isEmpty()) return KEY_SIZE;
-        if (key.length() >= 4) return 150f;
-        if (key.length() >= 2) return 108f;
+        if (key.length() >= 5) return 150f;
+        if (key.length() >= 4) return 130f;
+        if (key.length() >= 2) return 96f;
         return KEY_SIZE;
     }
 

@@ -134,12 +134,20 @@ public class WorldFactory {
      * exterior carries no dog or meat.
      *
      * <p>Collision is sourced exclusively from the hand-authored
-     * {@code Collisions} objectgroup. The {@link #FALLBACK_SOLID_LAYERS} list
-     * is only consulted when no objectgroup exists — the exterior has one,
-     * so those layers stay decorative. Rasterizing them as a "safety net"
-     * was too aggressive: the layers include Grass_objects and farm1-6 which
-     * carry walkable grass/path tiles, and rasterizing them blocked legitimate
-     * paths everywhere.
+     * {@code Collisions} objectgroup. Each house's ground-floor face is
+     * already covered by a rect there (e.g. left-house rect at TMX rows
+     * 8-9, right-house at rows 7-9) which is what physically blocks the
+     * player. The houses' <em>roof</em> tiles in {@code House_demo} /
+     * {@code House_demo2} extend several rows north of the ground footprint
+     * because that's the standard top-down perspective trick — the artist
+     * draws the roof up there so the player sprite can pass <em>behind</em>
+     * the house. Rasterizing those tile layers as solid (an earlier attempt)
+     * made the visible roof unwalkable from the sides and prevented the
+     * player from reaching anywhere north of any house.
+     *
+     * <p>Visual occlusion (player behind the roof) is the renderer's job
+     * via the {@code Overhead_Foreground} layer; collision is just the
+     * objectgroup.
      */
     public MapBundle loadExteriorBundle() {
         TiledMap tiledMap = new TmxMapLoader().load(DEFAULT_MAP_PATH);
@@ -179,12 +187,17 @@ public class WorldFactory {
         // are world-space (post-MAP_UNIT_SCALE), audited from the TMX.
         patchInteriorCollisionGaps(collisionMap);
 
-        // Dog: sleeping in the lower (south) room near the entry. Wander bounds
-        // span the entire visible interior — DogBrain rejects targets inside
-        // walls, so a generous outer rect is fine.
+        // Dog: sleeping in the lower (south) room near the entry. Wander
+        // bounds must cover the entire playable interior so the dog can roam
+        // every room — entry hall, living room, dining room, AND the upper
+        // bedrooms / bathroom. The TMX has floor cells in libGDX cols 9-76
+        // (world X 432-3648) and libGDX rows 18-66 (world Y 864-3168), so the
+        // rect is sized to contain that range with a small buffer. Earlier
+        // bounds (480, 480, 2640, 2160) only reached world Y 2640, clipping
+        // off most of the upper rooms which start at world Y 2352.
         float dogSpawnX = 700f;
         float dogSpawnY = 1080f;
-        Rectangle wanderBounds = new Rectangle(480f, 480f, 2640f, 2160f);
+        Rectangle wanderBounds = new Rectangle(432f, 864f, 3216f, 2304f);
 
         // Pre-placed meat. Two pieces — one in the kitchen-ish upper right,
         // one in a bedroom-ish far area. Both are drugged.

@@ -188,13 +188,22 @@ public class DogBrain {
             case INVESTIGATING_NOISE:
                 stepTowardTarget(delta);
                 // Bite: contact range with player ends the chase. The dog
-                // catches the player and lies down on the spot — what
-                // happens next is for higher-level systems to decide.
+                // catches the player, teleports back to its original spawn,
+                // and restarts the sleep -> wander cycle there. Resetting to
+                // home avoids stranding the dog wherever it caught the player
+                // (which could be far across the house) and keeps the patrol
+                // loop predictable across catches.
                 if (distanceToPlayerHitbox(player) <= balance.dogBiteRange) {
                     player.catchPlayer();
+                    dog.setPosition(dog.getHomeX(), dog.getHomeY());
+                    dog.clearTarget();
+                    waypoints.clear();
+                    silenceTimer = 0f;
+                    stuckTimer = 0f;
+                    stuckRefX = dog.getX();
+                    stuckRefY = dog.getY();
                     dog.enterState(NpcState.SLEEPING,
                         randomBetween(balance.dogSleepMinSeconds, balance.dogSleepMaxSeconds));
-                    waypoints.clear();
                     break;
                 }
                 if (reachedFinalGoal()) {
