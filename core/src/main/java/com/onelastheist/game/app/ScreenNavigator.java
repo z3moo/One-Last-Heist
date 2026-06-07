@@ -22,8 +22,10 @@ public class ScreenNavigator {
         this.context = context;
     }
 
-    public void showMainMenu() { game.setScreen(new MainMenuScreen(this)); }
+    public void showMainMenu() { game.setScreen(new MainMenuScreen(this, context)); }
     public void showPlayScreen() { game.setScreen(new PlayScreen(context, this)); }
     public void showPauseScreen() { game.setScreen(new PauseScreen(this)); }
-    public void showEndingScreen(EndingType endingType) { game.setScreen(new EndingScreen(this, endingType)); }
+    public void showEndingScreen(EndingType endingType) {
+        game.setScreen(new EndingScreen(this, context, endingType));
+    }
 }

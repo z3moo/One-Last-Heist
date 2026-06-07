@@ -23,7 +23,9 @@ import java.util.List;
  *   SLEEPING -timer-> WANDERING -timer-> SLEEPING (in place — no return home)
  *
  *   awake + audible player -> INVESTIGATING_NOISE
- *     - reached player: BITE (player.catchPlayer()) -> SLEEPING in place
+ *     - reached player: BITE (fires {@link #setOnBite} hook — wired by
+ *       {@link com.onelastheist.game.world.GameWorld} to the bite penalty:
+ *       clock deduction + white-flash overlay, NOT a catch) -> SLEEPING in place
  *     - silence for {@link BalanceConfig#dogNoiseLostSeconds}s -> WANDERING
  *       briefly (5-10s) then SLEEPING in place
  *
@@ -88,6 +90,12 @@ public class DogBrain {
     private float replanTimer;
     /** Time (s) since the dog last heard the player. Resets to 0 each frame the player is audible; counts up otherwise. Drives the noise-lost give-up. */
     private float silenceTimer;
+    /**
+     * Hook invoked when the dog physically bites the player. The world wires
+     * this to the time-penalty / bite-flash flow so the dog AI itself doesn't
+     * have to know about scoring or HUD effects.
+     */
+    private Runnable onBite = () -> {};
 
     public DogBrain(Dog dog, BalanceConfig balance, Rectangle wanderBounds, CollisionMap collisionMap) {
         this.dog = dog;
@@ -105,6 +113,15 @@ public class DogBrain {
         // not actively return to it — it sleeps wherever wandering ends.
         dog.setHome(dog.getX(), dog.getY());
         dog.enterState(NpcState.SLEEPING, randomBetween(balance.dogSleepMinSeconds, balance.dogSleepMaxSeconds));
+    }
+
+    /**
+     * Install a callback fired when the dog reaches bite range and clamps
+     * down on the player. Decouples the AI from the consequences (clock
+     * penalty, HUD flash) so this class stays pure behavior.
+     */
+    public void setOnBite(Runnable onBite) {
+        this.onBite = onBite == null ? () -> {} : onBite;
     }
 
     /**
@@ -187,14 +204,14 @@ public class DogBrain {
                 break;
             case INVESTIGATING_NOISE:
                 stepTowardTarget(delta);
-                // Bite: contact range with player ends the chase. The dog
-                // catches the player, teleports back to its original spawn,
-                // and restarts the sleep -> wander cycle there. Resetting to
-                // home avoids stranding the dog wherever it caught the player
-                // (which could be far across the house) and keeps the patrol
-                // loop predictable across catches.
+                // Bite: contact range with player triggers the onBite hook
+                // (the world deducts time + flashes the player) and resets
+                // the dog to its spawn so the patrol cycle restarts there.
+                // The dog itself does NOT mutate player state — that's the
+                // hook's responsibility, keeping this class side-effect-free
+                // for HUD / scoring.
                 if (distanceToPlayerHitbox(player) <= balance.dogBiteRange) {
-                    player.catchPlayer();
+                    onBite.run();
                     dog.setPosition(dog.getHomeX(), dog.getHomeY());
                     dog.clearTarget();
                     waypoints.clear();

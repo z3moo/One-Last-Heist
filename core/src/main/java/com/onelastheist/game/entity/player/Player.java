@@ -26,6 +26,7 @@ public class Player extends MovableEntity {
     public PlayerState getState() { return state; }
     public boolean isCrouching() { return crouching; }
     public boolean isHidden() { return state == PlayerState.HIDING; }
+    public boolean isCaught() { return state == PlayerState.CAUGHT; }
     public void setCrouching(boolean crouching) { this.crouching = crouching; }
     public void hide() { state = PlayerState.HIDING; }
     public void leaveHiding() { state = PlayerState.NORMAL; }

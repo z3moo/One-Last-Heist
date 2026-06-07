@@ -1,15 +1,22 @@
 package com.onelastheist.game.world;
 
+import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.maps.tiled.TiledMap;
 import com.badlogic.gdx.maps.tiled.TmxMapLoader;
+import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Rectangle;
+import com.onelastheist.game.ai.Pathfinder;
 import com.onelastheist.game.config.BalanceConfig;
 import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.npc.HomeOwner;
 import com.onelastheist.game.entity.player.Player;
 import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
+import com.onelastheist.game.environment.MoneyPickup;
+import com.onelastheist.game.environment.Newspaper;
+import com.onelastheist.game.environment.PianoPuzzle;
 import com.onelastheist.game.item.ItemFactory;
+import com.onelastheist.game.item.MoneyItem;
 import com.onelastheist.game.trap.AlarmSystem;
 
 import java.util.ArrayList;
@@ -85,8 +92,60 @@ public class WorldFactory {
         "walls"
     };
 
+    /** Cash value for a coin pickup. */
+    public static final int COIN_VALUE = 10;
+    /** Cash value for a diamond pickup. */
+    public static final int DIAMOND_VALUE = 20;
+    /** Coins placed inside the main house. Bulk of the money lives indoors so the heist matters. */
+    private static final int INTERIOR_COIN_COUNT = 18;
+    /** Diamonds placed inside the main house. */
+    private static final int INTERIOR_DIAMOND_COUNT = 9;
+    /** Coins placed in the exterior neighbourhood — just a sprinkle to teach the player the pickup mechanic before they go inside. */
+    private static final int EXTERIOR_COIN_COUNT = 2;
+    /** Diamonds placed in the exterior neighbourhood. */
+    private static final int EXTERIOR_DIAMOND_COUNT = 1;
+    /**
+     * Number of coins/diamonds reserved in the dog's spawn room. Placed
+     * BEFORE the rest of the interior so they always land there even if
+     * the random sampler runs short on attempts.
+     */
+    private static final int DOG_ROOM_COIN_COUNT = 1;
+    private static final int DOG_ROOM_DIAMOND_COUNT = 2;
+    /**
+     * The dog's spawn room (world coords). Used as a hard-reserved area
+     * for the dog-room money so the player has to risk waking the dog to
+     * collect those pickups. Tuned around the dog spawn at (700, 1080).
+     */
+    private static final Rectangle DOG_ROOM_BOUNDS = new Rectangle(480f, 864f, 720f, 336f);
+    /**
+     * The fenced exterior garden, tightened to match the actual collision
+     * perimeter:
+     * <ul>
+     *   <li>South fence sits around world Y ≈ 330 (libGDX bottom-up). Y
+     *       below that is the road and is unreachable.</li>
+     *   <li>West fence at world X ≈ 510. East fence at world X ≈ 2790.</li>
+     *   <li>North fence at world Y ≈ 1850. Y above that is unreachable.</li>
+     * </ul>
+     * Earlier bounds (220, 100, 2440, 1700) included the road and patches
+     * past the side fences — that's where coins were landing in
+     * unreachable spots. Tighten to a rect whose every cell is inside the
+     * playable garden.
+     */
+    public static final Rectangle EXTERIOR_GARDEN_BOUNDS = new Rectangle(560f, 380f, 2200f, 1450f);
+    /** Probe size used when checking if a money tile is walkable — small so a coin can fit between tight furniture but big enough that it isn't lodged inside a sub-tile collision rect. */
+    private static final float MONEY_PROBE_SIZE = 20f;
+    /** How close (world units) a money pickup is allowed to spawn to the player's spawn point. ~3 tiles — far enough that the player can't sweep a free pile on entry. */
+    private static final float MONEY_MIN_DISTANCE_FROM_SPAWN = 144f;
+    /** Minimum spacing between two money pickups so they don't visually stack. */
+    private static final float MONEY_MIN_SPACING = 96f;
+    /** Per-pickup attempt budget. Bumped from 40 so a tightly-packed map still places every coin/diamond. */
+    private static final int MONEY_ATTEMPTS_PER_PICKUP = 200;
+
     private final BalanceConfig balance;
     private final ItemFactory items = new ItemFactory();
+
+    /** Exposed so the world layer can mint items at runtime (e.g. piano-puzzle reward). */
+    public ItemFactory items() { return items; }
 
     public WorldFactory(BalanceConfig balance) { this.balance = balance; }
 
@@ -155,7 +214,15 @@ public class WorldFactory {
             tiledMap, MAP_UNIT_SCALE, COLLISION_OBJECT_LAYER, FALLBACK_SOLID_LAYERS);
         List<Door> doors = createExteriorDoors();
         registerDoorsAsSolids(collisionMap, doors);
-        return new MapBundle.Builder(tiledMap, collisionMap, doors, 520f, 280f).build();
+        // Money is restricted to the fenced garden so coins don't land on
+        // the road south of the house or in the unreachable patches beyond
+        // the perimeter fence.
+        List<MoneyPickup> money = generateMoneyPickups(
+            collisionMap, EXTERIOR_GARDEN_BOUNDS, 520f, 280f,
+            EXTERIOR_COIN_COUNT, EXTERIOR_DIAMOND_COUNT, "ext");
+        return new MapBundle.Builder(tiledMap, collisionMap, doors, 520f, 280f)
+            .moneyPickups(money)
+            .build();
     }
 
     /**
@@ -205,21 +272,52 @@ public class WorldFactory {
             new MeatPickup(items.druggedMeat("meat_kitchen"), 2160f, 1872f),
             new MeatPickup(items.druggedMeat("meat_pantry"), 1080f, 2208f)
         ));
-        List<KeyPickup> keys = new ArrayList<KeyPickup>(Arrays.asList(
-            // Tucked behind the piano at TMX col 14, row 45 (libGDX y 34) —
-            // tile-center world coords. The piano in `objects` covers the cell
-            // visually; the key only becomes obvious when the player approaches
-            // and notices the prompt range.
-            new KeyPickup(items.key(SIDE_HOUSE_KEY_ID, "Storage Key"), 696f, 1656f)
+        List<KeyPickup> keys = new ArrayList<KeyPickup>();
+        // Storage-house key is no longer a floor pickup — it's the reward
+        // for solving the piano puzzle. PlayScreen issues it on solve.
+        // Piano puzzle. World coords match the piano sprite at TMX col 14,
+        // libGDX row 34 — same cell the storage key used to sit on. Player
+        // must stand adjacent and press E to open the keyboard overlay.
+        List<PianoPuzzle> pianos = new ArrayList<PianoPuzzle>(Arrays.asList(
+            new PianoPuzzle(696f, 1656f)
+        ));
+        // Readable newspaper. Tile-center for TMX (col 23, row 60 from top)
+        // is world (1128, 936); nudged up and left by ~20 wu so the page
+        // sits a bit further into the open floor in front of the cabinet
+        // rather than dead-center on the tile under it. Sub-tile offsets
+        // are fine — the renderer draws this in a top-most pass so the
+        // exact anchor doesn't affect Y-sort.
+        List<Newspaper> newspapers = new ArrayList<Newspaper>(Arrays.asList(
+            new Newspaper(1108f, 956f)
         ));
 
         // Carpet bounds: cols 27-28, row 47 from top. Sprite math identical to
         // the prior comment block — see Git history if you want the derivation.
+        // Money: place the dog-room reservation FIRST so those slots can never
+        // be stolen by random sampling elsewhere. The remaining coins/diamonds
+        // sweep the full playable interior, with min-spacing applied across
+        // the dog-room placements so nothing overlaps.
+        Rectangle interiorBounds = new Rectangle(432f, 864f,
+            collisionMap.getWorldWidth() - 432f, collisionMap.getWorldHeight() - 864f);
+        List<MoneyPickup> money = new ArrayList<>(INTERIOR_COIN_COUNT + INTERIOR_DIAMOND_COUNT);
+        // Dog room: 1 coin + 2 diamonds (your call). Spawn-distance check
+        // uses the player spawn so the reservation sits naturally far from
+        // the entry; the dog room itself is always far from there.
+        placeMoneyInBounds(collisionMap, DOG_ROOM_BOUNDS, 1272f, 1524f,
+            DOG_ROOM_COIN_COUNT, DOG_ROOM_DIAMOND_COUNT, "int_dog", money);
+        // Remainder of the house. Subtract what's already reserved.
+        placeMoneyInBounds(collisionMap, interiorBounds, 1272f, 1524f,
+            INTERIOR_COIN_COUNT - DOG_ROOM_COIN_COUNT,
+            INTERIOR_DIAMOND_COUNT - DOG_ROOM_DIAMOND_COUNT,
+            "int", money);
         return new MapBundle.Builder(tiledMap, collisionMap, doors, 1272f, 1524f)
             .dogSpawn(dogSpawnX, dogSpawnY)
             .dogWanderBounds(wanderBounds)
             .meatPickups(pickups)
             .keyPickups(keys)
+            .moneyPickups(money)
+            .newspapers(newspapers)
+            .pianoPuzzles(pianos)
             .build();
     }
 
@@ -235,7 +333,7 @@ public class WorldFactory {
         List<Door> doors = createSideHouseDoors();
         registerDoorsAsSolids(collisionMap, doors);
         patchSideHouseCollisionGaps(collisionMap);
-        return new MapBundle.Builder(tiledMap, collisionMap, doors, 1440f, 576f).build();
+        return new MapBundle.Builder(tiledMap, collisionMap, doors, 1872f, 288f).build();
     }
 
     private static void registerDoorsAsSolids(CollisionMap collisionMap, List<Door> doors) {
@@ -286,10 +384,121 @@ public class WorldFactory {
         // sliver between Y=1062 and Y=1098 at X≈2245-2320). Cover with
         // overlapping margin so float drift can't slip through.
         collisionMap.addSolid(2245f, 1050f, 80f, 60f);
-        // South edge gaps (player can walk south off the floor into void).
-        // Add a thin south wall spanning the full map width as a backstop;
-        // the boundary check at Y=0 catches anything past this.
-        collisionMap.addSolid(0f, 0f, 2880f, 48f);
+    }
+
+    /**
+     * Scatter coin and diamond pickups across walkable tiles inside
+     * {@code bounds}, appending to {@code placed} so a sequence of calls
+     * can build up a single map's money list while honoring the
+     * {@link #MONEY_MIN_SPACING} between every pickup (across calls). Each
+     * candidate must:
+     * <ul>
+     *   <li>Pass {@link CollisionMap#rectCollides} for a small probe at the
+     *       tile center, so it's reachable not stuck in a wall / piece of
+     *       furniture.</li>
+     *   <li>Sit at least {@link #MONEY_MIN_DISTANCE_FROM_SPAWN} from
+     *       {@code spawnX/Y} so the player can't sweep a free pile from
+     *       the entry tile.</li>
+     *   <li>Sit at least {@link #MONEY_MIN_SPACING} from any previously
+     *       placed pickup so they don't visually overlap.</li>
+     * </ul>
+     * If a candidate fails after a generous attempt budget the placement
+     * is skipped — losing one or two coins is preferable to an infinite
+     * loop on a tightly-packed map. The {@code idPrefix} is used to make
+     * inventory ids unique across maps so a coin from the exterior and
+     * one from the interior don't collide in the player's inventory.
+     */
+    private void placeMoneyInBounds(CollisionMap collisionMap, Rectangle bounds,
+                                    float spawnX, float spawnY,
+                                    int coinCount, int diamondCount,
+                                    String idPrefix, List<MoneyPickup> placed) {
+        // Reachability seeded from the player spawn. Filters out coins that
+        // would otherwise land in isolated patches behind a fence, in a
+        // sealed void, or under furniture the player can't access. Built
+        // with a player-shaped pathfinder so the same probe size that
+        // governs in-game movement governs which tiles are valid pickups.
+        Pathfinder reachProbe = new Pathfinder(collisionMap, 42f, 12f, 60f, 36f);
+        boolean[] reachable = reachProbe.computeReachable(spawnX, spawnY);
+
+        float tileSize = collisionMap.getTileSize();
+        int minTx = Math.max(0, (int) (bounds.x / tileSize));
+        int maxTx = Math.min(collisionMap.getTileWidth() - 1,
+            (int) ((bounds.x + bounds.width) / tileSize));
+        int minTy = Math.max(0, (int) (bounds.y / tileSize));
+        int maxTy = Math.min(collisionMap.getTileHeight() - 1,
+            (int) ((bounds.y + bounds.height) / tileSize));
+        if (maxTx < minTx || maxTy < minTy) return;
+
+        int attemptBudget = (coinCount + diamondCount) * MONEY_ATTEMPTS_PER_PICKUP;
+        int coinsLeft = coinCount;
+        int diamondsLeft = diamondCount;
+        int coinIdx = placed.size();
+        int diamondIdx = placed.size();
+        float minSpawnDistSq = MONEY_MIN_DISTANCE_FROM_SPAWN * MONEY_MIN_DISTANCE_FROM_SPAWN;
+        float minSpacingSq = MONEY_MIN_SPACING * MONEY_MIN_SPACING;
+
+        while ((coinsLeft > 0 || diamondsLeft > 0) && attemptBudget-- > 0) {
+            int tx = MathUtils.random(minTx, maxTx);
+            int ty = MathUtils.random(minTy, maxTy);
+            float cx = tx * tileSize + tileSize / 2f;
+            float cy = ty * tileSize + tileSize / 2f;
+            // Walkability probe: small box at the tile center.
+            if (collisionMap.rectCollides(cx - MONEY_PROBE_SIZE / 2f, cy - MONEY_PROBE_SIZE / 2f,
+                MONEY_PROBE_SIZE, MONEY_PROBE_SIZE)) continue;
+            // Reachability: the player can BFS-walk here from spawn.
+            if (!reachable[ty * collisionMap.getTileWidth() + tx]) continue;
+            float dxSpawn = cx - spawnX;
+            float dySpawn = cy - spawnY;
+            if (dxSpawn * dxSpawn + dySpawn * dySpawn < minSpawnDistSq) continue;
+            // Spacing against earlier placements (this call + previous calls).
+            boolean tooClose = false;
+            for (int i = 0, n = placed.size(); i < n; i++) {
+                MoneyPickup other = placed.get(i);
+                float dx = cx - other.getX();
+                float dy = cy - other.getY();
+                if (dx * dx + dy * dy < minSpacingSq) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+
+            MoneyPickup.Kind kind;
+            MoneyItem money;
+            if (coinsLeft > 0 && (diamondsLeft == 0 || MathUtils.randomBoolean(0.66f))) {
+                kind = MoneyPickup.Kind.COIN;
+                money = items.money(idPrefix + "_coin_" + coinIdx++, COIN_VALUE);
+                coinsLeft--;
+            } else {
+                kind = MoneyPickup.Kind.DIAMOND;
+                money = items.money(idPrefix + "_dia_" + diamondIdx++, DIAMOND_VALUE);
+                diamondsLeft--;
+            }
+            // Random bob phase per pickup so a row of coins doesn't sync.
+            float bobPhase = MathUtils.random(0f, MathUtils.PI2);
+            placed.add(new MoneyPickup(money, kind, cx, cy, bobPhase));
+        }
+        // Diagnostic if the budget ran out before the spec was met. Earlier
+        // versions returned silently, which made it look like the player
+        // had grabbed the missing pickups when in fact they were never
+        // placed (e.g. bounds disconnected from spawn by a fence change).
+        if (coinsLeft > 0 || diamondsLeft > 0) {
+            Gdx.app.error("WorldFactory",
+                "money placement under-filled: prefix=" + idPrefix
+                    + " coinsLeft=" + coinsLeft + " diamondsLeft=" + diamondsLeft
+                    + " bounds=" + bounds);
+        }
+    }
+
+    /**
+     * One-shot helper: build a fresh list and run a single placement pass
+     * inside {@code bounds}. Used for maps that don't need reserved sub-areas
+     * (currently the exterior).
+     */
+    private List<MoneyPickup> generateMoneyPickups(CollisionMap collisionMap, Rectangle bounds,
+                                                   float spawnX, float spawnY,
+                                                   int coinCount, int diamondCount, String idPrefix) {
+        List<MoneyPickup> placed = new ArrayList<>(coinCount + diamondCount);
+        placeMoneyInBounds(collisionMap, bounds, spawnX, spawnY,
+            coinCount, diamondCount, idPrefix, placed);
+        return placed;
     }
 
     /**
@@ -318,10 +527,16 @@ public class WorldFactory {
         return doors;
     }
 
-    /** Exit strip at the south/front of the storage-house interior. */
+    /**
+     * Exit strip at the south end of the storage interior, aligned with
+     * the entry tile (TMX col 40, row 34). The door rect sits one tile
+     * south of the spawn so the player's hitbox bottom touches its top —
+     * same idiom as the main house's exit door. Walk south, press E to
+     * return to the exterior.
+     */
     private List<Door> createSideHouseDoors() {
         List<Door> doors = new ArrayList<Door>();
-        doors.add(new Door(1344f, 432f, 144f, 48f, EXTERIOR_MAP_ID, "Leave Storage", false));
+        doors.add(new Door(1872f, 192f, 144f, 48f, EXTERIOR_MAP_ID, "Leave Storage", false));
         return doors;
     }
 
@@ -346,6 +561,12 @@ public class WorldFactory {
         public final List<MeatPickup> meatPickups;
         /** Pre-placed keys the player can pick up. Empty on maps without keys. */
         public final List<KeyPickup> keyPickups;
+        /** Pre-placed coins/diamonds the player can pick up. Sized per map by {@link #generateMoneyPickups}. */
+        public final List<MoneyPickup> moneyPickups;
+        /** Stationary readable newspapers the player can interact with. Empty on maps without newspapers. */
+        public final List<Newspaper> newspapers;
+        /** Stationary interactive piano puzzles. The main interior has one; others are empty. */
+        public final List<PianoPuzzle> pianoPuzzles;
 
         private MapBundle(Builder b) {
             this.tiledMap = b.tiledMap;
@@ -362,6 +583,15 @@ public class WorldFactory {
             this.keyPickups = b.keyPickups == null
                 ? Collections.<KeyPickup>emptyList()
                 : Collections.unmodifiableList(b.keyPickups);
+            this.moneyPickups = b.moneyPickups == null
+                ? Collections.<MoneyPickup>emptyList()
+                : Collections.unmodifiableList(b.moneyPickups);
+            this.newspapers = b.newspapers == null
+                ? Collections.<Newspaper>emptyList()
+                : Collections.unmodifiableList(b.newspapers);
+            this.pianoPuzzles = b.pianoPuzzles == null
+                ? Collections.<PianoPuzzle>emptyList()
+                : Collections.unmodifiableList(b.pianoPuzzles);
         }
 
         public static final class Builder {
@@ -375,6 +605,9 @@ public class WorldFactory {
             private Rectangle dogWanderBounds;
             private List<MeatPickup> meatPickups;
             private List<KeyPickup> keyPickups;
+            private List<MoneyPickup> moneyPickups;
+            private List<Newspaper> newspapers;
+            private List<PianoPuzzle> pianoPuzzles;
 
             public Builder(TiledMap tiledMap, CollisionMap collisionMap, List<Door> doors, float spawnX, float spawnY) {
                 this.tiledMap = tiledMap;
@@ -388,6 +621,9 @@ public class WorldFactory {
             public Builder dogWanderBounds(Rectangle r) { this.dogWanderBounds = r; return this; }
             public Builder meatPickups(List<MeatPickup> p) { this.meatPickups = p; return this; }
             public Builder keyPickups(List<KeyPickup> p) { this.keyPickups = p; return this; }
+            public Builder moneyPickups(List<MoneyPickup> p) { this.moneyPickups = p; return this; }
+            public Builder newspapers(List<Newspaper> p) { this.newspapers = p; return this; }
+            public Builder pianoPuzzles(List<PianoPuzzle> p) { this.pianoPuzzles = p; return this; }
             public MapBundle build() { return new MapBundle(this); }
         }
     }

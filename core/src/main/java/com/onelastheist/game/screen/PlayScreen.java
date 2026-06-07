@@ -19,7 +19,15 @@ import com.badlogic.gdx.utils.viewport.FitViewport;
 import com.badlogic.gdx.utils.viewport.Viewport;
 import com.onelastheist.game.app.GameContext;
 import com.onelastheist.game.app.ScreenNavigator;
+import com.onelastheist.game.ai.HomeOwnerBrain;
+import com.onelastheist.game.audio.MusicId;
+import com.onelastheist.game.audio.SfxId;
+import com.onelastheist.game.ending.EndingResolver;
+import com.onelastheist.game.ending.EndingType;
+import com.onelastheist.game.entity.npc.NpcState;
 import com.onelastheist.game.entity.player.PlayerController;
+import com.onelastheist.game.environment.Newspaper;
+import com.onelastheist.game.environment.PianoPuzzle;
 import com.onelastheist.game.item.Item;
 import com.onelastheist.game.item.ItemType;
 import com.onelastheist.game.render.WorldRenderer;
@@ -136,6 +144,19 @@ public class PlayScreen extends ScreenAdapter {
     /** Tail of the label-fade window (seconds) where alpha ramps from 1 to 0. */
     private static final float HOTBAR_LABEL_FADE = 0.45f;
 
+    // Top-of-screen HUD: a clock badge on the left (countdown) and a coin-
+    // counter badge on the right (running total). Drawn in zoom-1 screen
+    // space exactly like the pause overlay so the badges stay the same
+    // visual size at any camera zoom.
+    private static final float HUD_BADGE_WIDTH = 240f;
+    private static final float HUD_BADGE_HEIGHT = 70f;
+    private static final float HUD_TOP_PADDING = 28f;
+    private static final float HUD_SIDE_PADDING = 42f;
+    /** Text scale inside the HUD badges. The value field is the rectangular interior, not the icon. */
+    private static final float HUD_TEXT_SCALE = 1.6f;
+    /** How wide (fraction of badge width) is reserved on the left for the icon — clock has an orange tab, coin frame has a coin to the left. Text starts after this. */
+    private static final float HUD_TEXT_LEFT_FRACTION = 0.30f;
+
     private final GameContext context;
     private final ScreenNavigator navigator;
     private final Vector3 touchPoint = new Vector3();
@@ -164,6 +185,24 @@ public class PlayScreen extends ScreenAdapter {
     private float promptTimer;
     private float lockedFlashTimer;
     private Door activeDoor;
+    /** Newspaper currently in interact range, or null. Refreshed every frame next to {@link #activeDoor}. */
+    private Newspaper activeNewspaper;
+    /** True while the player is reading the broadside (E toggles). All input except ESC pause is suppressed. */
+    private boolean newspaperOpen;
+    /** Piano puzzle currently in interact range, or null. Drives the floating prompt. */
+    private PianoPuzzle nearbyPiano;
+    /**
+     * Piano whose keyboard overlay is currently open, or null. Captured on
+     * open and held until close so walking out of the interact range
+     * doesn't NPE the input handler / overlay renderer.
+     */
+    private PianoPuzzle openPiano;
+    /** True while the keyboard overlay is open. C/D/E/F/G/A/B play notes; Q closes. */
+    private boolean pianoOpen;
+    /** Resolved ending if {@link PlayPhase#FADING_TO_END} is active. Drives which screen we navigate to once the fade completes. */
+    private EndingType pendingEnding;
+    /** Resolver instance is stateless; held as a field to avoid per-frame allocation. */
+    private final EndingResolver endingResolver = new EndingResolver();
     private boolean paused;
     /** Selected hotbar slot index. Bounded to [0, HOTBAR_SLOT_COUNT). */
     private int hotbarSelection;
@@ -173,6 +212,24 @@ public class PlayScreen extends ScreenAdapter {
     private final List<Item> hotbarItems = new ArrayList<>();
     private Texture hotbarMeatTexture;
     private Texture hotbarKeyTexture;
+    private Texture hudClockTexture;
+    private Texture hudCoinTexture;
+    /** Full-page broadside drawn when the player has an interior newspaper open. */
+    private Texture newspaperOpenTexture;
+
+    // Audio state. We compare this-frame state to last-frame state so we can
+    // fire one-shot SFX exactly on the transition (e.g. dog bite is "bite
+    // flash went from inactive to active") instead of every frame the
+    // condition holds. Loops are toggled per-frame; the AudioService
+    // de-dupes redundant on/off calls.
+    /** True while the gameplay theme is the active music. */
+    private boolean gameplayMusicStarted;
+    /** True last frame — use to detect 0→nonzero transitions for the bite SFX. */
+    private boolean prevBiteFlashActive;
+    /** True last frame — used to fire CarArrive once when the homeowner activates. */
+    private boolean prevHomeOwnerActive;
+    /** Dog's state last frame — used to fire the dog bark on the detect transition. */
+    private NpcState prevDogState;
 
     public PlayScreen(GameContext context, ScreenNavigator navigator) {
         this.context = context;
@@ -205,6 +262,9 @@ public class PlayScreen extends ScreenAdapter {
         // self-contained and means we don't depend on render-internal assets.
         hotbarMeatTexture = loadTexture("items/meat.png");
         hotbarKeyTexture = loadTexture("items/key.png");
+        hudClockTexture = loadTexture("ui/hud/clock.png");
+        hudCoinTexture = loadTexture("ui/hud/coin_counter.png");
+        newspaperOpenTexture = loadTexture("items/opened.png");
         // Mouse wheel changes the selected hotbar slot. Set as the screen's
         // input processor — the rest of input goes through Gdx.input polling
         // which doesn't depend on the registered processor, so this doesn't
@@ -212,7 +272,14 @@ public class PlayScreen extends ScreenAdapter {
         Gdx.input.setInputProcessor(new InputAdapter() {
             @Override
             public boolean scrolled(float amountX, float amountY) {
-                if (phase != PlayPhase.GAME || paused) return false;
+                // Block hotbar scroll while any overlay or lock is active —
+                // newspaper/piano/pause/caught/fade-to-end. Without this the
+                // wheel still cycled the hotbar selection behind the
+                // 0.85-alpha overlays and the floating item-name label
+                // bled through.
+                if (phase != PlayPhase.GAME || paused
+                    || newspaperOpen || pianoOpen
+                    || world.getPlayer().isCaught()) return false;
                 // amountY is positive when the wheel turns DOWN (toward user).
                 // Match a typical hotbar: wheel-down advances forward through
                 // the slots, wheel-up goes back.
@@ -236,15 +303,38 @@ public class PlayScreen extends ScreenAdapter {
 
         updateCamera();
         updateOverlayLayout();
+        updateAudio();
 
         Gdx.gl.glClearColor(0.03f, 0.04f, 0.06f, 1f);
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
-        if (phase == PlayPhase.GAME) {
+        if (phase == PlayPhase.GAME || phase == PlayPhase.FADING_TO_END) {
             renderer.render(delta, (OrthographicCamera) viewport.getCamera());
-            if (activeDoor != null) {
-                drawDoorPrompt((OrthographicCamera) viewport.getCamera(), activeDoor);
+            if (phase == PlayPhase.GAME) {
+                if (activeDoor != null && !newspaperOpen && !pianoOpen) {
+                    drawDoorPrompt((OrthographicCamera) viewport.getCamera(), activeDoor);
+                }
+                if (activeNewspaper != null && !newspaperOpen && !pianoOpen) {
+                    drawNewspaperPrompt((OrthographicCamera) viewport.getCamera(), activeNewspaper);
+                }
+                if (nearbyPiano != null && !pianoOpen && !newspaperOpen) {
+                    drawPianoPrompt((OrthographicCamera) viewport.getCamera(), nearbyPiano);
+                }
+                drawHotbar((OrthographicCamera) viewport.getCamera());
+                drawHud((OrthographicCamera) viewport.getCamera());
+                if (world.isBiteFlashActive()) {
+                    drawBiteFlash((OrthographicCamera) viewport.getCamera());
+                }
+                if (newspaperOpen) {
+                    drawNewspaperOverlay((OrthographicCamera) viewport.getCamera());
+                }
+                if (pianoOpen && openPiano != null) {
+                    drawPianoOverlay((OrthographicCamera) viewport.getCamera(), openPiano);
+                }
+            } else {
+                // FADING_TO_END: dim the world to black so the EndingScreen
+                // can fade back in from black for a continuous transition.
+                drawFadeOverlay((OrthographicCamera) viewport.getCamera());
             }
-            drawHotbar((OrthographicCamera) viewport.getCamera());
         } else {
             drawTutorialScreen(delta);
         }
@@ -263,7 +353,31 @@ public class PlayScreen extends ScreenAdapter {
     public ScreenNavigator getNavigator() { return navigator; }
 
     @Override
+    public void hide() {
+        // Stop audio only — DO NOT dispose() here. Game.setScreen calls
+        // hide() synchronously from inside the outgoing screen's render
+        // tick (we navigate from updateActivePhase → showEndingScreen),
+        // so disposing the world / renderer here would invalidate the
+        // TiledMap mid-frame and the still-pending render block would
+        // segfault in BufferUtils.copyJni from TileLayerOp.run.
+        // Resources free in dispose() on app shutdown — pre-existing
+        // leak across screens is acceptable; the crash isn't.
+        if (context != null) {
+            context.getAudio().stopAllLoops();
+            context.getAudio().stopMusic();
+        }
+    }
+
+    @Override
     public void dispose() {
+        // Stop the gameplay theme + any active SFX loops so the audio doesn't
+        // leak into the next screen. The AudioService itself is owned by
+        // GameContext and survives the screen swap; only this screen's
+        // claim on it ends here.
+        if (context != null) {
+            context.getAudio().stopAllLoops();
+            context.getAudio().stopMusic();
+        }
         if (renderer != null) renderer.dispose();
         if (world != null) world.dispose();
         if (shapes != null) shapes.dispose();
@@ -279,6 +393,9 @@ public class PlayScreen extends ScreenAdapter {
         if (menuPressedTexture != null) menuPressedTexture.dispose();
         if (hotbarMeatTexture != null) hotbarMeatTexture.dispose();
         if (hotbarKeyTexture != null) hotbarKeyTexture.dispose();
+        if (hudClockTexture != null) hudClockTexture.dispose();
+        if (hudCoinTexture != null) hudCoinTexture.dispose();
+        if (newspaperOpenTexture != null) newspaperOpenTexture.dispose();
         if (tutorialFont != null) tutorialFont.dispose();
     }
 
@@ -302,32 +419,154 @@ public class PlayScreen extends ScreenAdapter {
             return;
         }
 
-        playerController.update(world.getPlayer(), delta, world.getCollisionMap());
+        if (phase == PlayPhase.FADING_TO_END) {
+            // World still ticks during the fade so the homeowner walking
+            // up to the player keeps animating instead of freezing into a
+            // static frame. Player input is gated below — the world tick
+            // is what matters for the visual.
+            world.update(delta);
+            fadeTimer += delta;
+            if (fadeTimer >= FADE_DURATION) {
+                navigator.showEndingScreen(pendingEnding);
+            }
+            return;
+        }
+
+        // Once caught, the world freezes input so the player can't keep
+        // walking, opening doors, or grabbing loot. The actual game-over
+        // screen is wired up in a later step; for now this lock makes the
+        // catch read as a real consequence instead of a soft tap.
+        // Reading the newspaper applies a similar lock: the player stops
+        // walking and the broadside fills the screen until they press E
+        // again to close it. The piano overlay does the same — full focus
+        // on the keyboard until Q closes it.
+        boolean caught = world.getPlayer().isCaught();
+        boolean reading = newspaperOpen;
+        if (!caught && !reading && !pianoOpen) {
+            playerController.update(world.getPlayer(), delta, world.getCollisionMap());
+        }
         world.update(delta);
+        // Ending triggers — caught, time over, or escape with enough money.
+        // Once one fires we flip to FADING_TO_END and stop processing
+        // gameplay input for the rest of this frame.
+        if (checkEndingTriggers()) return;
         promptTimer += delta;
         if (lockedFlashTimer > 0f) lockedFlashTimer -= delta;
         if (hotbarLabelTimer > 0f) hotbarLabelTimer -= delta;
         activeDoor = world.findActiveDoor(DOOR_INTERACT_RADIUS);
-        if (activeDoor != null && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
-            triggerDoor(activeDoor);
-        }
-        // F: pick up whichever item the player is standing on.
-        if (Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
-            if (world.tryPickUpKey()) {
-                Gdx.app.log("PlayScreen", "Picked up key");
-                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
-            } else if (world.tryPickUpMeat()) {
-                Gdx.app.log("PlayScreen", "Picked up meat");
-                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+        // Newspapers don't have a footprint, so this is independent of the
+        // door check. They live in different rooms anyway.
+        activeNewspaper = world.findActiveNewspaper();
+        nearbyPiano = world.findActivePiano();
+        // Tick whichever piano is currently relevant — the open one if any
+        // (keeps the just-solved flash counting down past walking out of
+        // range), otherwise the nearby one for prompt animation.
+        PianoPuzzle pianoToTick = openPiano != null ? openPiano : nearbyPiano;
+        if (pianoToTick != null) pianoToTick.update(delta);
+        if (!caught) {
+            if (pianoOpen) {
+                handlePianoInput();
+            } else if (reading) {
+                // While reading: only E (close) is meaningful. Movement,
+                // pickups, drops, and door interaction are all suppressed
+                // so the player can't walk through walls behind the page.
+                if (Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
+                    newspaperOpen = false;
+                }
+            } else if (activeNewspaper != null
+                && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
+                // E near a newspaper opens the broadside. Eat the keypress
+                // so the same E doesn't immediately also trigger an
+                // adjacent door (newspapers and doors won't normally
+                // overlap in range, but be defensive).
+                newspaperOpen = true;
+            } else if (nearbyPiano != null
+                && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
+                // E near the piano opens the keyboard overlay. Capture the
+                // piano reference here — the player can wander out of
+                // interact range while the overlay is up; we keep using
+                // openPiano until they press Q.
+                openPiano = nearbyPiano;
+                pianoOpen = true;
+            } else if (activeDoor != null
+                && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
+                triggerDoor(activeDoor);
+            }
+            // F: pick up whichever item the player is standing on. Money first
+            // because it's the most common pickup; key second because it's
+            // unique; meat last so a stray meat tile under the player can't
+            // pre-empt collecting nearby money.
+            if (!reading && !pianoOpen && Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
+                if (world.tryPickUpMoney()) {
+                    Gdx.app.log("PlayScreen", "Picked up money");
+                    context.getAudio().playSfx(SfxId.COLLECT_ITEMS);
+                } else if (world.tryPickUpKey()) {
+                    Gdx.app.log("PlayScreen", "Picked up key");
+                    hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+                    context.getAudio().playSfx(SfxId.COLLECT_ITEMS);
+                } else if (world.tryPickUpMeat()) {
+                    Gdx.app.log("PlayScreen", "Picked up meat");
+                    hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+                    context.getAudio().playSfx(SfxId.COLLECT_ITEMS);
+                }
+            }
+            // G: drop a piece of meat at the player's feet. Same approach as F.
+            if (!reading && !pianoOpen && Gdx.input.isKeyJustPressed(context.getControlConfig().dropMeat)) {
+                if (world.tryDropMeat()) {
+                    Gdx.app.log("PlayScreen", "Dropped meat");
+                    hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+                }
             }
         }
-        // G: drop a piece of meat at the player's feet. Same approach as F.
-        if (Gdx.input.isKeyJustPressed(context.getControlConfig().dropMeat)) {
-            if (world.tryDropMeat()) {
-                Gdx.app.log("PlayScreen", "Dropped meat");
-                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
-            }
+    }
+
+    /**
+     * Inspect the world after this frame's tick and decide whether an
+     * ending should fire. Returns true if a trigger fired, in which case
+     * the caller should bail out of the rest of {@link #updateActivePhase}.
+     *
+     * <p>Triggers (first match wins):
+     * <ul>
+     *   <li>Caught by the homeowner → LOSE</li>
+     *   <li>Time over &amp; money &lt; target → LOSE</li>
+     *   <li>Time over uncaught with target met → WIN2</li>
+     *   <li>On exterior, outside the fenced garden, target met, has been
+     *       inside the house at least once → WIN2 (escape)</li>
+     * </ul>
+     *
+     * <p>Once {@link #pendingEnding} is set we flip to {@link PlayPhase#FADING_TO_END}
+     * and the world tick keeps running — but the player input branch
+     * exits early so the player can't move during the fade.
+     */
+    private boolean checkEndingTriggers() {
+        if (phase != PlayPhase.GAME) return false;
+        EndingType resolved = null;
+        if (world.getPlayer().isCaught()) {
+            resolved = EndingType.LOSE;
+        } else if (world.getClock().isTimeOver()) {
+            resolved = world.getObjectives().hasEnoughMoney() ? EndingType.WIN2 : EndingType.LOSE;
+        } else if (world.getObjectives().hasEnoughMoney()
+            && world.hasPlayerEnteredHouse()
+            && world.isPlayerOutsideGarden()) {
+            resolved = EndingType.WIN2;
         }
+        if (resolved == null) return false;
+        pendingEnding = resolved;
+        phase = PlayPhase.FADING_TO_END;
+        fadeTimer = 0f;
+        // Drop any open overlays so the fade-out is purely the world dim.
+        newspaperOpen = false;
+        pianoOpen = false;
+        openPiano = null;
+        // Stop SFX loops AND the gameplay music immediately. Music keeps
+        // playing across screen swaps because LibGDX only calls hide() on
+        // setScreen, not dispose(); without an explicit stop the InHouse
+        // theme overlaps the win/lose sting on the EndingScreen.
+        if (context != null) {
+            context.getAudio().stopAllLoops();
+            context.getAudio().stopMusic();
+        }
+        return true;
     }
 
     private void triggerDoor(Door door) {
@@ -345,21 +584,38 @@ public class PlayScreen extends ScreenAdapter {
         // Map swaps in place — same screen, same WorldRenderer instance, just a
         // different active TiledMap and door list. Clearing activeDoor avoids
         // drawing a stale prompt for one frame at the new player position.
+        // Also drop any newspaper-read state — the only newspaper is in the
+        // main house, so a swap means we shouldn't be reading anymore.
         if (MAIN_HOUSE_INTERIOR_ID.equals(targetMapId)) {
             world.enterInterior();
             activeDoor = null;
+            activeNewspaper = null;
+            newspaperOpen = false;
+            nearbyPiano = null;
+            openPiano = null;
+            pianoOpen = false;
             lockedFlashTimer = 0f;
             return;
         }
         if (SIDE_HOUSE_INTERIOR_ID.equals(targetMapId)) {
             world.enterSideHouse();
             activeDoor = null;
+            activeNewspaper = null;
+            newspaperOpen = false;
+            nearbyPiano = null;
+            openPiano = null;
+            pianoOpen = false;
             lockedFlashTimer = 0f;
             return;
         }
         if (EXTERIOR_MAP_ID.equals(targetMapId)) {
             world.returnToExterior();
             activeDoor = null;
+            activeNewspaper = null;
+            newspaperOpen = false;
+            nearbyPiano = null;
+            openPiano = null;
+            pianoOpen = false;
             lockedFlashTimer = 0f;
             return;
         }
@@ -373,6 +629,12 @@ public class PlayScreen extends ScreenAdapter {
     }
 
     private void handlePauseInput() {
+        // Don't let pause stall the ending fade — the fade timer only
+        // advances inside updateActivePhase, and the pause overlay would
+        // block updateActivePhase indefinitely. Catch- and time-over have
+        // already happened by this point; there's nothing meaningful to
+        // pause for during the dim-out.
+        if (phase == PlayPhase.FADING_TO_END) return;
         if (Gdx.input.isKeyJustPressed(Input.Keys.ESCAPE)) {
             paused = !paused;
         }
@@ -387,16 +649,19 @@ public class PlayScreen extends ScreenAdapter {
         viewport.unproject(touchPoint);
 
         if (restartBounds.contains(touchPoint.x, touchPoint.y)) {
+            context.getAudio().playSfx(SfxId.CLICK_OK);
             navigator.showPlayScreen();
             return;
         }
 
         if (resumeBounds.contains(touchPoint.x, touchPoint.y)) {
+            context.getAudio().playSfx(SfxId.CLICK_OK);
             paused = false;
             return;
         }
 
         if (menuBounds.contains(touchPoint.x, touchPoint.y)) {
+            context.getAudio().playSfx(SfxId.CLICK_OK);
             navigator.showMainMenu();
         }
     }
@@ -404,6 +669,13 @@ public class PlayScreen extends ScreenAdapter {
     private void drawPauseOverlay() {
         viewport.apply();
         OrthographicCamera camera = (OrthographicCamera) viewport.getCamera();
+        // Temporarily reset zoom to 1.0 so the pause panel appears the same
+        // visual size as it does on the menu / tutorial screens. Without this,
+        // the 0.5 game zoom makes the panel fill twice as much screen area.
+        float savedZoom = camera.zoom;
+        camera.zoom = MENU_CAMERA_ZOOM;
+        camera.update();
+
         float left = getCameraLeft(camera);
         float bottom = getCameraBottom(camera);
         shapes.setProjectionMatrix(camera.combined);
@@ -416,7 +688,9 @@ public class PlayScreen extends ScreenAdapter {
         shapes.setColor(0f, 0f, 0f, 0.58f);
         shapes.rect(left, bottom, WORLD_WIDTH, WORLD_HEIGHT);
 
-        drawPausePanel(left + PANEL_X, bottom + PANEL_Y);
+        float panelX = left + PANEL_X;
+        float panelY = bottom + PANEL_Y;
+        drawPausePanel(panelX, panelY);
 
         shapes.end();
 
@@ -425,6 +699,10 @@ public class PlayScreen extends ScreenAdapter {
         drawPauseButton(restartBounds, restartNormalTexture, restartHoverTexture, restartPressedTexture);
         drawPauseButton(menuBounds, menuNormalTexture, menuHoverTexture, menuPressedTexture);
         overlayBatch.end();
+
+        // Restore game zoom.
+        camera.zoom = savedZoom;
+        camera.update();
     }
 
     private void drawPauseButton(Rectangle bounds, Texture normalTexture, Texture hoverTexture, Texture pressedTexture) {
@@ -544,6 +822,346 @@ public class PlayScreen extends ScreenAdapter {
             b2 + (b1 - b2) * t,
             1f
         );
+    }
+
+    /**
+     * One-frame input handler for the piano overlay. C/D/E/F/G/A/B play
+     * their notes (and feed the puzzle); Q closes the overlay. E here would
+     * collide with the global "interact" key, so we deliberately remap close
+     * to Q while inside the piano. On a SOLVED result the storage key is
+     * granted via {@link GameWorld#awardStorageKey()} and the overlay closes
+     * automatically after the brief solved-flash window.
+     */
+    private void handlePianoInput() {
+        if (Gdx.input.isKeyJustPressed(Input.Keys.Q)) {
+            pianoOpen = false;
+            openPiano = null;
+            return;
+        }
+        if (openPiano == null) {
+            // Defensive — should never happen now that openPiano is set on
+            // open and only cleared on close, but if it did we'd just shut
+            // the overlay rather than NPE.
+            pianoOpen = false;
+            return;
+        }
+        char note = 0;
+        SfxId sfx = null;
+        if (Gdx.input.isKeyJustPressed(Input.Keys.C)) { note = 'C'; sfx = SfxId.NOTE_C; }
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.D)) { note = 'D'; sfx = SfxId.NOTE_D; }
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.E)) { note = 'E'; sfx = SfxId.NOTE_E; }
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.F)) { note = 'F'; sfx = SfxId.NOTE_F; }
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.G)) { note = 'G'; sfx = SfxId.NOTE_G; }
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.A)) { note = 'A'; sfx = SfxId.NOTE_A; }
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.B)) { note = 'B'; sfx = SfxId.NOTE_B; }
+        if (note == 0) return;
+        context.getAudio().playSfx(sfx);
+        PianoPuzzle.Result r = openPiano.pressNote(note);
+        if (r == PianoPuzzle.Result.SOLVED) {
+            world.awardStorageKey();
+            hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+            context.getAudio().playSfx(SfxId.COLLECT_ITEMS);
+        }
+    }
+
+    /**
+     * Floating "E to Play" panel hovering over the piano. Mirrors the
+     * newspaper / door prompt visuals so the prompt language stays
+     * consistent for the player.
+     */
+    private void drawPianoPrompt(OrthographicCamera camera, PianoPuzzle piano) {
+        float pulsePhase = (promptTimer / PROMPT_PULSE_PERIOD) * MathUtils.PI2;
+        float pulse = 0.5f + 0.5f * (float) Math.sin(pulsePhase);
+        float alpha = 0.65f + 0.35f * pulse;
+
+        float bobPhase = (promptTimer / PROMPT_BOB_PERIOD) * MathUtils.PI2;
+        float bob = (float) Math.sin(bobPhase) * PROMPT_BOB_AMPLITUDE;
+
+        float centerX = piano.getX();
+        float baseY = piano.getY() + PROMPT_VERTICAL_OFFSET + bob;
+        float panelX = centerX - PROMPT_WIDTH / 2f;
+        float panelY = baseY;
+
+        // If the puzzle is already solved, tint the prompt green so the
+        // player knows revisits are cosmetic-only and the key is already in
+        // their inventory. Pre-solve uses the standard amber.
+        boolean solved = piano.isSolved();
+        Color borderTint = solved ? new Color(0.40f, 0.96f, 0.56f, 1f) : new Color(0.96f, 0.65f, 0.13f, 1f);
+        Color haloTint = solved ? new Color(0.40f, 0.96f, 0.56f, 1f) : new Color(0.96f, 0.62f, 0.13f, 1f);
+        Color labelColor = solved ? new Color(0.62f, 1f, 0.78f, 1f) : new Color(1f, 0.85f, 0.45f, 1f);
+
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+
+        float haloAlpha = 0.18f + 0.32f * pulse;
+        shapes.setColor(haloTint.r, haloTint.g, haloTint.b, haloAlpha);
+        float haloPad = 18f;
+        shapes.rect(panelX - haloPad, panelY - haloPad,
+            PROMPT_WIDTH + haloPad * 2f, PROMPT_HEIGHT + haloPad * 2f);
+        shapes.setColor(0f, 0f, 0f, 0.55f * alpha);
+        shapes.rect(panelX + 8f, panelY - 8f, PROMPT_WIDTH, PROMPT_HEIGHT);
+        shapes.setColor(borderTint.r, borderTint.g, borderTint.b, alpha);
+        shapes.rect(panelX, panelY, PROMPT_WIDTH, PROMPT_HEIGHT);
+        shapes.setColor(0.07f, 0.075f, 0.09f, alpha);
+        shapes.rect(panelX + 4f, panelY + 4f, PROMPT_WIDTH - 8f, PROMPT_HEIGHT - 8f);
+
+        float arrowAlpha = 0.65f + 0.35f * pulse;
+        shapes.setColor(borderTint.r, borderTint.g, borderTint.b, arrowAlpha);
+        float arrowCx = panelX + PROMPT_WIDTH / 2f;
+        float arrowTipY = panelY - 14f;
+        shapes.triangle(arrowCx - 12f, panelY + 2f, arrowCx + 12f, panelY + 2f, arrowCx, arrowTipY);
+
+        float capW = 50f;
+        float capH = 50f;
+        float capX = panelX + 22f;
+        float capY = panelY + (PROMPT_HEIGHT - capH) / 2f;
+        shapes.setColor(0f, 0f, 0f, 0.45f * alpha);
+        shapes.rect(capX + 3f, capY - 4f, capW, capH);
+        shapes.setColor(0.86f, 0.86f, 0.90f, alpha);
+        shapes.rect(capX, capY, capW, capH);
+        shapes.setColor(0.97f, 0.97f, 1.0f, alpha);
+        shapes.rect(capX + 5f, capY + 7f, capW - 10f, capH - 12f);
+        shapes.setColor(0.55f, 0.55f, 0.60f, alpha);
+        shapes.rect(capX + 4f, capY + 4f, capW - 8f, 5f);
+
+        shapes.end();
+
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        Color keyTextColor = new Color(0.10f, 0.10f, 0.12f, alpha);
+        labelColor.a = alpha;
+        drawTextInRect("E", capX, capY, capW, capH, 1.2f, keyTextColor);
+        float labelX = capX + capW + 16f;
+        float labelW = panelX + PROMPT_WIDTH - labelX - 16f;
+        drawTextInRect(solved ? "PLAYED" : "PLAY", labelX, panelY, labelW, PROMPT_HEIGHT, 1.0f, labelColor);
+        overlayBatch.end();
+    }
+
+    /**
+     * Full-screen piano keyboard. Seven white-key panes labeled C/D/E/F/G/A/B,
+     * each with a flashing animation when its key is pressed (driven by
+     * {@code stateTime}). The current input buffer renders as a row of dots
+     * above the keyboard so the player sees their progress without
+     * memorizing what they've typed.
+     */
+    private void drawPianoOverlay(OrthographicCamera camera, PianoPuzzle piano) {
+        float visibleWidth = camera.viewportWidth * camera.zoom;
+        float visibleHeight = camera.viewportHeight * camera.zoom;
+        float left = getCameraLeft(camera);
+        float bottom = getCameraBottom(camera);
+
+        // Dim backdrop. Greener if the puzzle just accepted the sequence;
+        // fades out via the puzzle's internal timer. There's no "wrong"
+        // flash anymore — matching is substring, so a non-match just means
+        // "keep playing" and shouldn't punish the player visually.
+        float just = piano.isJustSolved() ? 0.6f * (piano.getJustSolvedTimer() / 1.6f) : 0f;
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(0.08f, 0.08f + 0.20f * just, 0.10f, 0.85f);
+        shapes.rect(left, bottom, visibleWidth, visibleHeight);
+        // (No rolling-progress display — the player just plays freely;
+        // the key drops the moment the solution sequence appears in their
+        // input history. Hiding the dots removes the misleading
+        // "5-window" implication and keeps focus on the keyboard.)
+
+        // Keyboard. Seven white-key rectangles, equal width, gap between
+        // them. Sized against the visible viewport so it fits at zoom 0.5.
+        char[] notes = {'C','D','E','F','G','A','B'};
+        int[] keycodes = {Input.Keys.C, Input.Keys.D, Input.Keys.E, Input.Keys.F, Input.Keys.G, Input.Keys.A, Input.Keys.B};
+        int n = notes.length;
+        float kbW = visibleWidth * 0.78f;
+        float kbH = visibleHeight * 0.42f;
+        float kbX = left + (visibleWidth - kbW) / 2f;
+        float kbY = bottom + visibleHeight * 0.10f;
+        float gap = 6f;
+        float keyW = (kbW - gap * (n - 1)) / n;
+
+        // Frame.
+        shapes.setColor(0.05f, 0.05f, 0.07f, 1f);
+        shapes.rect(kbX - 12f, kbY - 12f, kbW + 24f, kbH + 24f);
+        shapes.setColor(0.20f, 0.13f, 0.07f, 1f);
+        shapes.rect(kbX - 6f, kbY - 6f, kbW + 12f, kbH + 12f);
+
+        for (int i = 0; i < n; i++) {
+            float kx = kbX + i * (keyW + gap);
+            boolean down = Gdx.input.isKeyPressed(keycodes[i]);
+            // Bottom-up shading: subtle gradient via two stacked rects so a
+            // pressed key reads as "depressed" (no top highlight).
+            float r = down ? 0.78f : 0.96f;
+            float g = down ? 0.78f : 0.96f;
+            float b = down ? 0.82f : 0.99f;
+            shapes.setColor(r, g, b, 1f);
+            shapes.rect(kx, kbY, keyW, kbH);
+            // Top sheen — only when not pressed.
+            if (!down) {
+                shapes.setColor(1f, 1f, 1f, 0.55f);
+                shapes.rect(kx + 3f, kbY + kbH - 12f, keyW - 6f, 6f);
+            }
+            // Bottom shadow strip for grounding.
+            shapes.setColor(0f, 0f, 0f, 0.35f);
+            shapes.rect(kx, kbY, keyW, 5f);
+        }
+        shapes.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+
+        // Letter labels on each key, plus the title and close hint.
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        Color label = new Color(0.18f, 0.18f, 0.22f, 1f);
+        Color labelDown = new Color(0.96f, 0.65f, 0.13f, 1f);
+        for (int i = 0; i < n; i++) {
+            float kx = kbX + i * (keyW + gap);
+            boolean down = Gdx.input.isKeyPressed(keycodes[i]);
+            drawTextInRect(String.valueOf(notes[i]),
+                kx, kbY + 18f, keyW, 30f,
+                1.4f, down ? labelDown : label);
+        }
+        Color title = new Color(1f, 0.92f, 0.62f, 0.95f);
+        drawTextInRect(piano.isSolved() ? "Sequence accepted" : "Play the sequence",
+            left, bottom + visibleHeight * 0.84f, visibleWidth, 26f,
+            1.1f, title);
+        Color hint = new Color(1f, 0.85f, 0.45f, 0.95f);
+        drawTextInRect("Q to close",
+            left, bottom + 18f, visibleWidth, 20f, 0.95f, hint);
+        overlayBatch.end();
+    }
+
+    /**
+     * Floating "E to Read" panel hovering over a newspaper. Same idiom as
+     * {@link #drawDoorPrompt(OrthographicCamera, Door)} — pulse + bob driven
+     * by {@code promptTimer}, keycap on the left, label on the right — minus
+     * the locked-flash branch since newspapers can't be locked. Anchored to
+     * the newspaper's world position rather than a door rect.
+     */
+    private void drawNewspaperPrompt(OrthographicCamera camera, Newspaper paper) {
+        float pulsePhase = (promptTimer / PROMPT_PULSE_PERIOD) * MathUtils.PI2;
+        float pulse = 0.5f + 0.5f * (float) Math.sin(pulsePhase);
+        float alpha = 0.65f + 0.35f * pulse;
+
+        float bobPhase = (promptTimer / PROMPT_BOB_PERIOD) * MathUtils.PI2;
+        float bob = (float) Math.sin(bobPhase) * PROMPT_BOB_AMPLITUDE;
+
+        float centerX = paper.getX();
+        float baseY = paper.getY() + PROMPT_VERTICAL_OFFSET + bob;
+        float panelX = centerX - PROMPT_WIDTH / 2f;
+        float panelY = baseY;
+
+        Color borderTint = new Color(0.96f, 0.65f, 0.13f, 1f);
+        Color haloTint = new Color(0.96f, 0.62f, 0.13f, 1f);
+        Color labelColor = new Color(1f, 0.85f, 0.45f, 1f);
+
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+
+        float haloAlpha = 0.18f + 0.32f * pulse;
+        shapes.setColor(haloTint.r, haloTint.g, haloTint.b, haloAlpha);
+        float haloPad = 18f;
+        shapes.rect(panelX - haloPad, panelY - haloPad,
+            PROMPT_WIDTH + haloPad * 2f, PROMPT_HEIGHT + haloPad * 2f);
+
+        shapes.setColor(0f, 0f, 0f, 0.55f * alpha);
+        shapes.rect(panelX + 8f, panelY - 8f, PROMPT_WIDTH, PROMPT_HEIGHT);
+
+        shapes.setColor(borderTint.r, borderTint.g, borderTint.b, alpha);
+        shapes.rect(panelX, panelY, PROMPT_WIDTH, PROMPT_HEIGHT);
+
+        shapes.setColor(0.07f, 0.075f, 0.09f, alpha);
+        shapes.rect(panelX + 4f, panelY + 4f, PROMPT_WIDTH - 8f, PROMPT_HEIGHT - 8f);
+
+        float arrowAlpha = 0.65f + 0.35f * pulse;
+        shapes.setColor(borderTint.r, borderTint.g, borderTint.b, arrowAlpha);
+        float arrowCx = panelX + PROMPT_WIDTH / 2f;
+        float arrowTipY = panelY - 14f;
+        shapes.triangle(arrowCx - 12f, panelY + 2f, arrowCx + 12f, panelY + 2f, arrowCx, arrowTipY);
+
+        float capW = 50f;
+        float capH = 50f;
+        float capX = panelX + 22f;
+        float capY = panelY + (PROMPT_HEIGHT - capH) / 2f;
+        shapes.setColor(0f, 0f, 0f, 0.45f * alpha);
+        shapes.rect(capX + 3f, capY - 4f, capW, capH);
+        shapes.setColor(0.86f, 0.86f, 0.90f, alpha);
+        shapes.rect(capX, capY, capW, capH);
+        shapes.setColor(0.97f, 0.97f, 1.0f, alpha);
+        shapes.rect(capX + 5f, capY + 7f, capW - 10f, capH - 12f);
+        shapes.setColor(0.55f, 0.55f, 0.60f, alpha);
+        shapes.rect(capX + 4f, capY + 4f, capW - 8f, 5f);
+
+        shapes.end();
+
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        Color keyTextColor = new Color(0.10f, 0.10f, 0.12f, alpha);
+        labelColor.a = alpha;
+        drawTextInRect("E", capX, capY, capW, capH, 1.2f, keyTextColor);
+        float labelX = capX + capW + 16f;
+        float labelW = panelX + PROMPT_WIDTH - labelX - 16f;
+        drawTextInRect("READ", labelX, panelY, labelW, PROMPT_HEIGHT, 1.0f, labelColor);
+        overlayBatch.end();
+    }
+
+    /**
+     * Full-screen broadside overlay shown while {@link #newspaperOpen} is true.
+     * Dim the world behind, draw the page centered with letterbox bars, and
+     * a small "Press E to close" footnote so the player isn't stuck.
+     *
+     * <p>Sizes everything against the camera's visible region
+     * ({@code viewportWidth * zoom}) rather than {@link #WORLD_WIDTH} —
+     * gameplay runs at a zoom of 0.5 so the visible width is 960 wu, half
+     * the design size. Earlier I sized the page off WORLD_WIDTH and the
+     * dim rect off WORLD_WIDTH too, which extended both well past the
+     * actual viewport and made the page render anchored to a corner.
+     */
+    private void drawNewspaperOverlay(OrthographicCamera camera) {
+        float visibleWidth = camera.viewportWidth * camera.zoom;
+        float visibleHeight = camera.viewportHeight * camera.zoom;
+        float left = getCameraLeft(camera);
+        float bottom = getCameraBottom(camera);
+
+        // Dim backdrop covering the visible viewport (not the design size).
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(0f, 0f, 0f, 0.78f);
+        shapes.rect(left, bottom, visibleWidth, visibleHeight);
+        shapes.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+
+        // Centered page. Aspect ratio matches the source asset (3:4 for the
+        // existing opened.png). Fit-clamp to 86% of visible height OR 55% of
+        // visible width — whichever scales smaller wins, so the page never
+        // bleeds past the screen edge regardless of source aspect.
+        float pageW = newspaperOpenTexture.getWidth();
+        float pageH = newspaperOpenTexture.getHeight();
+        float maxH = visibleHeight * 0.86f;
+        float maxW = visibleWidth * 0.55f;
+        float scale = Math.min(maxH / pageH, maxW / pageW);
+        float drawW = pageW * scale;
+        float drawH = pageH * scale;
+        float drawX = left + (visibleWidth - drawW) / 2f;
+        float drawY = bottom + (visibleHeight - drawH) / 2f;
+
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        overlayBatch.setColor(Color.WHITE);
+        overlayBatch.draw(newspaperOpenTexture, drawX, drawY, drawW, drawH);
+        overlayBatch.end();
+
+        // Small hint at the bottom — same prompt-yellow as the door prompt
+        // so the player keeps the visual association. Anchored to the
+        // visible viewport's bottom, not the design size.
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        Color hint = new Color(1f, 0.85f, 0.45f, 0.95f);
+        drawTextInRect("Press E to close", left, bottom + 18f, visibleWidth, 20f, 1.0f, hint);
+        overlayBatch.end();
     }
 
     /**
@@ -685,6 +1303,103 @@ public class PlayScreen extends ScreenAdapter {
             default:
                 return null;
         }
+    }
+
+    /**
+     * Top-of-screen HUD: time-remaining badge in the top-left, money-total
+     * badge in the top-right. Both render at zoom 1.0 (same pattern as
+     * {@link #drawPauseOverlay}) so badge size stays constant regardless of
+     * camera zoom. Time formats as MM:SS; money is the running total from
+     * {@link com.onelastheist.game.world.ObjectiveTracker#getCollectedMoney}.
+     */
+    private void drawHud(OrthographicCamera camera) {
+        float savedZoom = camera.zoom;
+        camera.zoom = MENU_CAMERA_ZOOM;
+        camera.update();
+
+        float left = getCameraLeft(camera);
+        float bottom = getCameraBottom(camera);
+        float topY = bottom + WORLD_HEIGHT - HUD_TOP_PADDING - HUD_BADGE_HEIGHT;
+
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        overlayBatch.setColor(Color.WHITE);
+        // Clock badge — top-left.
+        float clockX = left + HUD_SIDE_PADDING;
+        overlayBatch.draw(hudClockTexture, clockX, topY, HUD_BADGE_WIDTH, HUD_BADGE_HEIGHT);
+        // Money badge — top-right. Mirror across the screen.
+        float moneyX = left + WORLD_WIDTH - HUD_SIDE_PADDING - HUD_BADGE_WIDTH;
+        overlayBatch.draw(hudCoinTexture, moneyX, topY, HUD_BADGE_WIDTH, HUD_BADGE_HEIGHT);
+
+        // Text.
+        Color valueColor = new Color(0.10f, 0.10f, 0.12f, 1f);
+        float textOriginX = HUD_BADGE_WIDTH * HUD_TEXT_LEFT_FRACTION;
+        float textWidth = HUD_BADGE_WIDTH - textOriginX - 12f;
+        drawTextInRect(formatTime(world.getClock().getRemainingSeconds()),
+            clockX + textOriginX, topY, textWidth, HUD_BADGE_HEIGHT, HUD_TEXT_SCALE, valueColor);
+        drawTextInRect(Integer.toString(world.getObjectives().getCollectedMoney()),
+            moneyX + textOriginX, topY, textWidth, HUD_BADGE_HEIGHT, HUD_TEXT_SCALE, valueColor);
+        overlayBatch.end();
+
+        camera.zoom = savedZoom;
+        camera.update();
+    }
+
+    /**
+     * White flicker over the player + a "-30 seconds" floating notification
+     * during the post-bite window. Both fade together as
+     * {@link GameWorld#getBiteFlashStrength()} drops to zero. Rendered in
+     * world-space (no zoom override) so the flash sticks to the player as
+     * they move.
+     */
+    private void drawBiteFlash(OrthographicCamera camera) {
+        float strength = world.getBiteFlashStrength();
+        if (strength <= 0f) return;
+
+        float playerCenterX = world.getPlayer().getX() + ACTOR_CENTER_OFFSET;
+        float playerBottomY = world.getPlayer().getY() + 28f;
+        // Flicker: pulse the alpha at 18 Hz so it reads as a strobe rather
+        // than a smooth fade. Multiply by the overall fade for a tail-out.
+        float flicker = (float) Math.sin(promptTimer * 38f);
+        float flickerAlpha = strength * (0.55f + 0.35f * flicker);
+        if (flickerAlpha < 0f) flickerAlpha = 0f;
+
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(1f, 1f, 1f, flickerAlpha);
+        // Tight ellipse over the player sprite — wide enough to cover the
+        // player but not so wide it bleeds onto the dog.
+        shapes.ellipse(playerCenterX - 60f, playerBottomY, 120f, 130f);
+        shapes.end();
+
+        // "-30 seconds" floating text above the player. Drawn in world-space
+        // so it bobs with the camera; the strength is the alpha so it fades
+        // out cleanly with the flash.
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        String label = "-" + (int) world.getBitePenaltySeconds() + "s";
+        Color textColor = new Color(1f, 0.32f, 0.32f, strength);
+        // Float text upward over the lifespan of the flash so it looks like
+        // damage popping off the player. Convert remaining strength back to
+        // elapsed time: bigger lift the longer the effect has been on screen.
+        float lift = (1f - strength) * 60f;
+        float textY = world.getPlayer().getY() + 240f + lift;
+        tutorialFont.getData().setScale(1.4f);
+        tutorialLayout.setText(tutorialFont, label);
+        float textX = playerCenterX - tutorialLayout.width / 2f;
+        tutorialFont.setColor(textColor);
+        tutorialFont.draw(overlayBatch, label, textX, textY);
+        overlayBatch.end();
+    }
+
+    private static String formatTime(float seconds) {
+        int total = (int) Math.ceil(seconds);
+        if (total < 0) total = 0;
+        int minutes = total / 60;
+        int secs = total % 60;
+        return String.format("%d:%02d", minutes, secs);
     }
 
     private void drawTutorialScreen(float delta) {
@@ -918,19 +1633,29 @@ public class PlayScreen extends ScreenAdapter {
         shapes.setProjectionMatrix(camera.combined);
         shapes.begin(ShapeRenderer.ShapeType.Filled);
         shapes.setColor(0f, 0f, 0f, alpha);
-        shapes.rect(0f, 0f, WORLD_WIDTH, WORLD_HEIGHT);
+        // Anchor the fade rect to the visible viewport, not (0,0)-(WORLD).
+        // The gameplay camera runs at zoom 0.5 and is centered on the
+        // player, so a world-space rect at the design size only covers
+        // ~half the screen — the visual we saw during FADING_TO_END.
+        // getCameraLeft/Bottom give us the bottom-left of what's actually
+        // on screen; viewportWidth * zoom is the visible extent.
+        float visibleWidth = camera.viewportWidth * camera.zoom;
+        float visibleHeight = camera.viewportHeight * camera.zoom;
+        shapes.rect(getCameraLeft(camera), getCameraBottom(camera), visibleWidth, visibleHeight);
         shapes.end();
     }
 
     private void updateOverlayLayout() {
         OrthographicCamera camera = (OrthographicCamera) viewport.getCamera();
-        float left = getCameraLeft(camera);
-        float bottom = getCameraBottom(camera);
-        float buttonX = PANEL_X + (PANEL_WIDTH - BUTTON_WIDTH) / 2f;
-        float menuY = PANEL_Y + 50f;
-        menuBounds.set(left + buttonX, bottom + menuY, BUTTON_WIDTH, BUTTON_HEIGHT);
-        restartBounds.set(left + buttonX, bottom + menuY + BUTTON_HEIGHT + BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT);
-        resumeBounds.set(left + buttonX, restartBounds.y + BUTTON_HEIGHT + BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT);
+        // Button bounds use zoom 1.0 positioning to match drawPauseOverlay,
+        // which temporarily resets zoom before rendering the panel.
+        float overlayLeft = camera.position.x - camera.viewportWidth * MENU_CAMERA_ZOOM / 2f;
+        float overlayBottom = camera.position.y - camera.viewportHeight * MENU_CAMERA_ZOOM / 2f;
+        float buttonX = overlayLeft + PANEL_X + (PANEL_WIDTH - BUTTON_WIDTH) / 2f;
+        float menuY = overlayBottom + PANEL_Y + 50f;
+        menuBounds.set(buttonX, menuY, BUTTON_WIDTH, BUTTON_HEIGHT);
+        restartBounds.set(buttonX, menuY + BUTTON_HEIGHT + BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT);
+        resumeBounds.set(buttonX, restartBounds.y + BUTTON_HEIGHT + BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT);
     }
 
     private void drawPausePanel(float panelX, float panelY) {
@@ -948,9 +1673,100 @@ public class PlayScreen extends ScreenAdapter {
         drawRivets(panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT);
     }
 
+    /**
+     * Per-frame audio mixer driver. Translates current world state into
+     * one-shot SFX (edge-triggered against the previous frame's state) and
+     * looped SFX (level-triggered every frame). Must be called every frame
+     * regardless of pause / phase so loops drop cleanly when gameplay halts.
+     *
+     * <ul>
+     *   <li>Music: gameplay theme starts on first GAME-phase frame, swaps
+     *       back to MENU-style silence on pause (we just stop loops; the
+     *       music is whatever the menu started).</li>
+     *   <li>Player footsteps: looped while {@link com.onelastheist.game.entity.player.Player#isMakingNoise()}.</li>
+     *   <li>Homeowner footsteps: looped while his brain is APPROACHING.</li>
+     *   <li>CarArrive: fired once when the homeowner brain comes online.</li>
+     *   <li>Dog SFX: fired on the bite-flash 0→nonzero transition.</li>
+     * </ul>
+     */
+    private void updateAudio() {
+        com.onelastheist.game.audio.AudioService audio = context.getAudio();
+
+        // Music: switch to the gameplay theme the first time we render the
+        // GAME phase, regardless of pause state. Pausing keeps the music
+        // looping under the pause overlay; the menu theme would have to be
+        // re-started by the menu screen on its own.
+        if (phase == PlayPhase.GAME && !gameplayMusicStarted) {
+            audio.playMusic(MusicId.IN_HOUSE);
+            gameplayMusicStarted = true;
+        }
+
+        // While paused, suppress all footstep loops so silence under the
+        // pause overlay isn't undermined by a perpetually-walking thief.
+        if (paused || phase != PlayPhase.GAME) {
+            audio.setLoop(SfxId.FOOTSTEPS_THIEF, false);
+            audio.setLoop(SfxId.FOOTSTEPS_HOMEOWNER, false);
+            return;
+        }
+
+        // Thief footsteps: loop whenever the player would broadcast noise
+        // to AI hearing. Crouching/standing-still both turn this off
+        // automatically since isMakingNoise() returns false in those cases.
+        // Suppressed during caught/reading/piano so a stuck "moving" flag
+        // (controller hasn't ticked since the lock started) doesn't keep
+        // the footstep loop running during overlays.
+        boolean playerLoud = !world.getPlayer().isCaught()
+            && !newspaperOpen
+            && !pianoOpen
+            && world.getPlayer().isMakingNoise();
+        audio.setLoop(SfxId.FOOTSTEPS_THIEF, playerLoud);
+
+        // Homeowner audio. Brain may be null until the clock crosses the
+        // arrival threshold. CarArrive fires once on the null→non-null
+        // transition. Footsteps loop while the brain is APPROACHING (he's
+        // walking up the road); they stop when he steps inside and HUNTING
+        // takes over — interior steps are a deliberate omission so the
+        // player can't audio-cue his exact position once he's hunting.
+        HomeOwnerBrain brain = world.getHomeOwnerBrain();
+        boolean homeOwnerActive = brain != null;
+        if (homeOwnerActive && !prevHomeOwnerActive) {
+            audio.playSfx(SfxId.CAR_ARRIVE);
+        }
+        prevHomeOwnerActive = homeOwnerActive;
+        boolean approaching = homeOwnerActive
+            && brain.getPhase() == HomeOwnerBrain.Phase.APPROACHING;
+        audio.setLoop(SfxId.FOOTSTEPS_HOMEOWNER, approaching);
+
+        // Dog SFX: bark on detect (state enters INVESTIGATING_NOISE) AND on
+        // the bite itself. The bite path uses the bite-flash 0→active edge
+        // so we get the audio cue at the exact frame the world applies the
+        // penalty, even if the dog state has already moved past
+        // INVESTIGATING_NOISE by then. Detection uses the dog's NpcState
+        // edge — only fires when the state was something else last frame
+        // and is INVESTIGATING_NOISE this frame, so re-acquiring the player
+        // mid-chase doesn't spam the bark.
+        NpcState dogState = world.getDog().getState();
+        if (world.hasActiveDog()
+            && dogState == NpcState.INVESTIGATING_NOISE
+            && prevDogState != NpcState.INVESTIGATING_NOISE) {
+            audio.playSfx(SfxId.DOG);
+        }
+        prevDogState = dogState;
+
+        boolean biteFlashActive = world.isBiteFlashActive();
+        if (biteFlashActive && !prevBiteFlashActive) {
+            audio.playSfx(SfxId.DOG);
+        }
+        prevBiteFlashActive = biteFlashActive;
+    }
+
     private void updateCamera() {
         OrthographicCamera camera = (OrthographicCamera) viewport.getCamera();
-        if (phase != PlayPhase.GAME) {
+        // Pre-game phases (tutorial, fade-in) use the menu camera framing.
+        // FADING_TO_END deliberately keeps the gameplay camera so the
+        // dim-to-black covers the player's last known position rather
+        // than snapping to a recentered/zoomed-out view.
+        if (phase != PlayPhase.GAME && phase != PlayPhase.FADING_TO_END) {
             camera.zoom = MENU_CAMERA_ZOOM;
             camera.position.set(WORLD_WIDTH / 2f, WORLD_HEIGHT / 2f, 0f);
             camera.update();
@@ -1039,6 +1855,12 @@ public class PlayScreen extends ScreenAdapter {
     private enum PlayPhase {
         TUTORIAL,
         FADING_TO_GAME,
-        GAME
+        GAME,
+        /**
+         * Played the win/lose triggered, currently fading the world to
+         * black before navigating to the ending screen. Movement and
+         * world ticks are frozen during this phase.
+         */
+        FADING_TO_END
     }
 }

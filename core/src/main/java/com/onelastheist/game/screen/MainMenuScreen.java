@@ -22,7 +22,10 @@ import com.badlogic.gdx.math.Vector3;
 import com.badlogic.gdx.utils.Array;
 import com.badlogic.gdx.utils.viewport.FitViewport;
 import com.badlogic.gdx.utils.viewport.Viewport;
+import com.onelastheist.game.app.GameContext;
 import com.onelastheist.game.app.ScreenNavigator;
+import com.onelastheist.game.audio.MusicId;
+import com.onelastheist.game.audio.SfxId;
 
 /**
  * Title screen. Renders a full-screen background, four image buttons (Play /
@@ -45,6 +48,7 @@ public class MainMenuScreen implements Screen {
 
     private final Array<Texture> textures = new Array<>();
     private final ScreenNavigator navigator;
+    private final GameContext context;
     private final Vector3 touchPoint = new Vector3();
 
     private Viewport viewport;
@@ -62,11 +66,16 @@ public class MainMenuScreen implements Screen {
     private String statusMessage = "Play button clicked - add game screen here";
 
     public MainMenuScreen() {
-        this(null);
+        this(null, null);
     }
 
     public MainMenuScreen(ScreenNavigator navigator) {
+        this(navigator, null);
+    }
+
+    public MainMenuScreen(ScreenNavigator navigator, GameContext context) {
         this.navigator = navigator;
+        this.context = context;
     }
 
     @Override
@@ -82,6 +91,13 @@ public class MainMenuScreen implements Screen {
         font.getData().setScale(2.2f);
         font.setUseIntegerPositions(false);
         glyphLayout = new GlyphLayout();
+
+        // Menu theme: kicked off here so it survives across menu sub-screens
+        // (credits popup, settings) without restart. PlayScreen swaps it for
+        // the gameplay theme on start; we restart it on hide() if needed.
+        if (context != null) {
+            context.getAudio().playMusic(MusicId.MENU);
+        }
 
         addMenuButtons();
     }
@@ -169,6 +185,7 @@ public class MainMenuScreen implements Screen {
         playButton.addListener(new ChangeListener() {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
+                playClickSfx();
                 showCredits = false;
                 if (navigator != null) {
                     navigator.showPlayScreen();
@@ -181,6 +198,7 @@ public class MainMenuScreen implements Screen {
         settingsButton.addListener(new ChangeListener() {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
+                playClickSfx();
                 showCredits = false;
                 statusMessage = "Settings screen is not wired yet";
                 statusTimer = 1.5f;
@@ -189,6 +207,7 @@ public class MainMenuScreen implements Screen {
         creditsButton.addListener(new ChangeListener() {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
+                playClickSfx();
                 showCredits = true;
                 ignoreCreditsOutsideClick = true;
             }
@@ -196,6 +215,7 @@ public class MainMenuScreen implements Screen {
         exitButton.addListener(new ChangeListener() {
             @Override
             public void changed(ChangeEvent event, Actor actor) {
+                playClickSfx();
                 Gdx.app.exit();
             }
         });
@@ -372,5 +392,10 @@ public class MainMenuScreen implements Screen {
         font.setColor(color);
         glyphLayout.setText(font, text, color, width, 1, true);
         font.draw(batch, glyphLayout, x, y);
+    }
+
+    /** Fire the universal button-click SFX. Tolerant of the no-context test path. */
+    private void playClickSfx() {
+        if (context != null) context.getAudio().playSfx(SfxId.CLICK_OK);
     }
 }

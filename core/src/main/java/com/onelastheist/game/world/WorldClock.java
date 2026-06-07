@@ -21,4 +21,14 @@ public class WorldClock {
     public float getRemainingSeconds() { return remainingSeconds; }
     public boolean isTimeOver() { return remainingSeconds <= 0f; }
     public void setRunning(boolean running) { this.running = running; }
+
+    /**
+     * Subtract {@code seconds} from the remaining time, clamped at zero. Used
+     * by penalty events (the dog biting the player drops 30s off the clock).
+     * Negative inputs are ignored so a malformed call cannot give back time.
+     */
+    public void deduct(float seconds) {
+        if (seconds <= 0f) return;
+        remainingSeconds = Math.max(0f, remainingSeconds - seconds);
+    }
 }

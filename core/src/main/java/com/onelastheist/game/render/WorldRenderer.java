@@ -1,11 +1,15 @@
 package com.onelastheist.game.render;
 
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.Animation;
 import com.badlogic.gdx.graphics.g2d.Batch;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.g2d.TextureRegion;
+import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.maps.MapLayer;
 import com.badlogic.gdx.maps.MapLayers;
 import com.badlogic.gdx.maps.MapGroupLayer;
@@ -16,12 +20,15 @@ import com.badlogic.gdx.maps.tiled.TiledMapTileLayer;
 import com.badlogic.gdx.maps.tiled.objects.TiledMapTileMapObject;
 import com.badlogic.gdx.maps.tiled.renderers.OrthogonalTiledMapRenderer;
 import com.badlogic.gdx.utils.Disposable;
+import com.onelastheist.game.ai.HomeOwnerBrain;
 import com.onelastheist.game.entity.base.MovableEntity;
 import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.player.Player;
 import com.onelastheist.game.environment.DroppedMeat;
 import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
+import com.onelastheist.game.environment.MoneyPickup;
+import com.onelastheist.game.environment.Newspaper;
 import com.onelastheist.game.world.GameWorld;
 import com.onelastheist.game.world.WorldFactory;
 
@@ -117,6 +124,15 @@ public class WorldRenderer implements Disposable {
         "wall",
         "bathroom",
         "overhead",
+        // Storage TMX has a tile layer named "object_furniture" full of
+        // furniture cells. The earlier "object" token over-matched the
+        // exterior's "Grass_objects", "Object1", and "Objects2" tile
+        // layers (substring match), pulling ground decor and farm tiles
+        // into the Y-sort pass and drawing them on top of the player.
+        // The specific suffix isolates the side-house layer cleanly.
+        // Object*groups* (with TileMapObjects inside) still Y-sort via
+        // hasTileObjects(); this token only affects authored tile layers.
+        "object_furniture",
     };
     /**
      * Layer-name substrings drawn AFTER the Y-sort pass — always on top of
@@ -142,6 +158,14 @@ public class WorldRenderer implements Disposable {
     private static final float DOG_DRAW_SIZE = 120f;
     /** Max world-space dimension for floor item sprites. */
     private static final float ITEM_DRAW_SIZE = 36f;
+    /** Number of triangle slices used for the homeowner vision cone. More = smoother edge along walls. */
+    private static final int VISION_CONE_SEGMENTS = 18;
+    /** Tint applied to the homeowner's vision cone. Soft red, low alpha so it reads as a danger zone without burying the art beneath it. */
+    private static final Color VISION_CONE_FILL = new Color(1f, 0.32f, 0.32f, 0.22f);
+    /** Bob amplitude (world units) for coin/diamond pickups. */
+    private static final float MONEY_BOB_AMPLITUDE = 6f;
+    /** Bob angular rate (rad/s) for coin/diamond pickups. ~0.7s up + 0.7s down. */
+    private static final float MONEY_BOB_RATE = 4.5f;
     private static final float FRAME_DURATION = 0.14f;
     private static final float CROUCH_IDLE_FRAME_DURATION = 0.22f;
     private static final float DOG_SLEEP_FRAME_DURATION = 0.32f;
@@ -153,6 +177,8 @@ public class WorldRenderer implements Disposable {
 
     private final GameWorld world;
     private final SpriteBatch batch = new SpriteBatch();
+    /** Shapes used for the homeowner's vision-cone overlay. */
+    private final ShapeRenderer visionShapes = new ShapeRenderer();
     private OrthogonalTiledMapRenderer mapRenderer;
     /** Map layers drawn before the Y-sort pass, in TMX order — floors and floor decor (the "always under" stuff). */
     private final List<LayerOp> floorPass = new ArrayList<>();
@@ -179,6 +205,9 @@ public class WorldRenderer implements Disposable {
     private final Texture dogSleepTexture = loadPixelTexture("characters/enemies/dog/dog_sleep.png");
     private final Texture meatTexture = loadPixelTexture("items/meat.png");
     private final Texture keyTexture = loadPixelTexture("items/key.png");
+    private final Texture coinTexture = loadPixelTexture("items/coin.png");
+    private final Texture diamondTexture = loadPixelTexture("items/diamond.png");
+    private final Texture newspaperTexture = loadPixelTexture("items/newspaper.png");
     private final List<Animation<TextureRegion>> playerIdle = createAnimations(playerIdleTexture);
     private final List<Animation<TextureRegion>> playerWalk = createAnimations(playerWalkTexture);
     private final List<Animation<TextureRegion>> playerCrouchWalk = createAnimations(playerCrouchTexture, FRAME_DURATION, CROUCH_WALK_STARTS, FRAME_COUNT);
@@ -229,6 +258,33 @@ public class WorldRenderer implements Disposable {
         }
 
         runPlan(overheadPass);
+
+        // Newspapers: drawn in a final overlay pass, AFTER the overhead
+        // foreground, so the folded sprite is never visually clipped by
+        // walls, furniture, or rooftop trim. Y-sorting was unreliable here
+        // because authored furniture in the same room sometimes anchored
+        // further south than the newspaper, sliding the page behind it.
+        // A flat top-most pass sidesteps the whole question.
+        List<Newspaper> papers = world.getNewspapers();
+        if (!papers.isEmpty()) {
+            Batch overlay = mapRenderer.getBatch();
+            overlay.begin();
+            try {
+                for (int i = 0, n = papers.size(); i < n; i++) {
+                    Newspaper p = papers.get(i);
+                    drawNewspaper(overlay, p.getX(), p.getY());
+                }
+            } finally {
+                overlay.end();
+            }
+        }
+
+        // Vision cone overlay sits above everything in world-space so the
+        // player can see exactly where the homeowner is looking. It is the
+        // last per-frame draw so it isn't occluded by walls / furniture.
+        if (world.isHomeOwnerVisibleHere() && world.getHomeOwnerBrain() != null) {
+            drawHomeOwnerVisionCone(camera, world.getHomeOwnerBrain());
+        }
     }
 
     public void renderPlayerOnly(float deltaSeconds, OrthographicCamera camera) {
@@ -246,6 +302,7 @@ public class WorldRenderer implements Disposable {
     public void dispose() {
         if (mapRenderer != null) mapRenderer.dispose();
         batch.dispose();
+        visionShapes.dispose();
         playerIdleTexture.dispose();
         playerWalkTexture.dispose();
         playerCrouchTexture.dispose();
@@ -255,6 +312,9 @@ public class WorldRenderer implements Disposable {
         dogSleepTexture.dispose();
         meatTexture.dispose();
         keyTexture.dispose();
+        coinTexture.dispose();
+        diamondTexture.dispose();
+        newspaperTexture.dispose();
     }
 
     private void refreshIfMapChanged() {
@@ -509,17 +569,26 @@ public class WorldRenderer implements Disposable {
         for (KeyPickup pickup : world.getKeyPickups()) {
             frameYSortBuffer.add(new YSortKeyItem(pickup.getX(), pickup.getY()));
         }
+        // Coins / diamonds. Bob phase + value carried from the pickup itself
+        // so each pickup animates independently.
+        for (MoneyPickup pickup : world.getMoneyPickups()) {
+            frameYSortBuffer.add(new YSortMoneyItem(pickup.getX(), pickup.getY(),
+                pickup.getKind(), pickup.getBobPhase()));
+        }
+        // Newspapers are intentionally NOT added to the Y-sort buffer.
+        // They're drawn in a top-most overlay pass after overheadPass so
+        // the page is always legible regardless of nearby furniture sort.
 
         // Actors. Anchor Y is the foot, not the sprite origin — that's what
         // makes a player at the south wall correctly sort over the wall cap.
-        if (!world.isInInterior()) {
-            if (world.getHomeOwner().isVisible()) {
-                frameYSortBuffer.add(new YSortActorItem(world.getHomeOwner(), ActorKind.HOMEOWNER));
-            }
-        } else {
-            if (world.hasActiveDog()) {
-                frameYSortBuffer.add(new YSortActorItem(world.getDog(), ActorKind.DOG));
-            }
+        // Homeowner draws on both maps now (he approaches from outside before
+        // entering); the world tells us when he's on the same map as the
+        // player so we don't render him twice.
+        if (world.isHomeOwnerVisibleHere()) {
+            frameYSortBuffer.add(new YSortActorItem(world.getHomeOwner(), ActorKind.HOMEOWNER));
+        }
+        if (world.hasActiveDog() && world.isInInterior()) {
+            frameYSortBuffer.add(new YSortActorItem(world.getDog(), ActorKind.DOG));
         }
         frameYSortBuffer.add(new YSortActorItem(world.getPlayer(), ActorKind.PLAYER));
     }
@@ -626,8 +695,70 @@ public class WorldRenderer implements Disposable {
         drawCenteredItem(outputBatch, meatTexture, x, y);
     }
 
+    /**
+     * Draw a translucent vision cone for the homeowner. The cone is
+     * triangulated as a fan of {@link #VISION_CONE_SEGMENTS} thin slices;
+     * each slice's far point is the result of a raycast against the
+     * collision map, so the rendered cone stops at the same wall the
+     * detection test stops at. The art is faintly red to read as "danger
+     * zone" without overpowering the gameplay sprites.
+     */
+    private void drawHomeOwnerVisionCone(OrthographicCamera camera, HomeOwnerBrain brain) {
+        float originX = brain.getVisionOriginX();
+        float originY = brain.getVisionOriginY();
+        float maxRange = brain.getVisionRange();
+        float halfAngle = brain.getVisionAngleDegrees() * 0.5f * (float) (Math.PI / 180.0);
+        float forward = brain.forwardAngleRadians();
+        float startAngle = forward - halfAngle;
+        float angleStep = (halfAngle * 2f) / VISION_CONE_SEGMENTS;
+
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        visionShapes.setProjectionMatrix(camera.combined);
+        visionShapes.begin(ShapeRenderer.ShapeType.Filled);
+        visionShapes.setColor(VISION_CONE_FILL);
+
+        // Pre-compute each slice end so adjacent triangles share an edge
+        // and we don't see seams between them.
+        float[] xs = new float[VISION_CONE_SEGMENTS + 1];
+        float[] ys = new float[VISION_CONE_SEGMENTS + 1];
+        for (int i = 0; i <= VISION_CONE_SEGMENTS; i++) {
+            float a = startAngle + i * angleStep;
+            float dx = (float) Math.cos(a);
+            float dy = (float) Math.sin(a);
+            float reach = brain.raycastDistance(originX, originY, dx, dy, maxRange);
+            xs[i] = originX + dx * reach;
+            ys[i] = originY + dy * reach;
+        }
+        for (int i = 0; i < VISION_CONE_SEGMENTS; i++) {
+            visionShapes.triangle(originX, originY, xs[i], ys[i], xs[i + 1], ys[i + 1]);
+        }
+        visionShapes.end();
+        // Don't leak the blend state — the next frame's first draw call may
+        // assume blending is off, and any debug overlay added after this
+        // would otherwise inherit the translucent fill silently.
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+    }
+
     private void drawKeyItem(Batch outputBatch, float x, float y) {
         drawCenteredItem(outputBatch, keyTexture, x, y);
+    }
+
+    /** Draw the folded newspaper sprite at world (x, y), centered on its tile. */
+    private void drawNewspaper(Batch outputBatch, float x, float y) {
+        drawCenteredItem(outputBatch, newspaperTexture, x, y);
+    }
+
+    /**
+     * Draw a coin/diamond pickup with a small idle bob. The base position
+     * is the world coord of the pickup; the bob applies a vertical sin
+     * offset so the sprite rises and dips by ~6 wu over a 1.4s cycle.
+     * {@code phase} stagger keeps adjacent coins out of lockstep.
+     */
+    private void drawMoneyItem(Batch outputBatch, float x, float y, MoneyPickup.Kind kind, float phase) {
+        Texture tex = kind == MoneyPickup.Kind.DIAMOND ? diamondTexture : coinTexture;
+        float bob = (float) Math.sin(stateTime * MONEY_BOB_RATE + phase) * MONEY_BOB_AMPLITUDE;
+        drawCenteredItem(outputBatch, tex, x, y + bob);
     }
 
     private static void drawCenteredItem(Batch outputBatch, Texture texture, float centerX, float centerY) {
@@ -863,6 +994,41 @@ public class WorldRenderer implements Disposable {
         @Override public float anchorY() { return y; }
         @Override public void draw(Batch batch, WorldRenderer renderer) {
             renderer.drawKeyItem(batch, x, y);
+        }
+    }
+
+    /** Folded newspaper. Static — no bob, no animation. Y-sort by world Y. */
+    private static final class YSortNewspaperItem implements YSortItem {
+        // Retained for now in case we ever want to fold newspapers back into
+        // Y-sorting. Currently unused — see WorldRenderer.render()'s
+        // top-most newspaper pass for the live draw path.
+        private final float x;
+        private final float y;
+        YSortNewspaperItem(float x, float y) {
+            this.x = x;
+            this.y = y;
+        }
+        @Override public float anchorY() { return y; }
+        @Override public void draw(Batch batch, WorldRenderer renderer) {
+            renderer.drawNewspaper(batch, x, y);
+        }
+    }
+
+    /** Coin / diamond pickup. Anchor at the world Y of the pickup; the bob is purely visual. */
+    private static final class YSortMoneyItem implements YSortItem {
+        private final float x;
+        private final float y;
+        private final MoneyPickup.Kind kind;
+        private final float phase;
+        YSortMoneyItem(float x, float y, MoneyPickup.Kind kind, float phase) {
+            this.x = x;
+            this.y = y;
+            this.kind = kind;
+            this.phase = phase;
+        }
+        @Override public float anchorY() { return y; }
+        @Override public void draw(Batch batch, WorldRenderer renderer) {
+            renderer.drawMoneyItem(batch, x, y, kind, phase);
         }
     }
 

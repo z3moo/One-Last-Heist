@@ -180,6 +180,57 @@ public class Pathfinder {
         return !blocked[ty * width + tx];
     }
 
+    /**
+     * Flood-fill walkable cells reachable from the entity-origin
+     * {@code (fromX,fromY)}. Returns a {@code boolean[width*height]}
+     * parallel to the internal blocked grid where {@code true} means
+     * "the player can BFS-walk to this tile from the seed". Used at
+     * map-load time to pre-filter random pickup placements so coins
+     * never land on isolated patches the player cannot reach (the
+     * area beyond a sealed fence, a void cell behind a wall, etc.).
+     *
+     * <p>If the seed cell itself is blocked the returned mask is all
+     * false — callers should guard against that case rather than
+     * silently scattering pickups on random walkable cells.
+     */
+    public boolean[] computeReachable(float fromX, float fromY) {
+        boolean[] reachable = new boolean[width * height];
+        int seedX = worldToTileX(fromX + agentOffsetX + agentWidth / 2f);
+        int seedY = worldToTileY(fromY + agentOffsetY + agentHeight / 2f);
+        if (!inBounds(seedX, seedY) || blocked[seedY * width + seedX]) return reachable;
+        Deque<Integer> frontier = new ArrayDeque<>();
+        int seedIdx = seedY * width + seedX;
+        reachable[seedIdx] = true;
+        frontier.add(seedIdx);
+        while (!frontier.isEmpty()) {
+            int cur = frontier.poll();
+            int cx = cur % width;
+            int cy = cur / width;
+            tryEnqueueReachable(frontier, reachable, cx + 1, cy);
+            tryEnqueueReachable(frontier, reachable, cx - 1, cy);
+            tryEnqueueReachable(frontier, reachable, cx, cy + 1);
+            tryEnqueueReachable(frontier, reachable, cx, cy - 1);
+        }
+        return reachable;
+    }
+
+    private void tryEnqueueReachable(Deque<Integer> frontier, boolean[] reachable, int x, int y) {
+        if (!inBounds(x, y)) return;
+        int idx = y * width + x;
+        if (reachable[idx]) return;
+        if (blocked[idx]) return;
+        reachable[idx] = true;
+        frontier.add(idx);
+    }
+
+    /** True if the entity-origin {@code (worldX, worldY)} tilizes to a cell flagged reachable in {@code mask}. */
+    public boolean isReachable(boolean[] mask, float worldX, float worldY) {
+        int tx = worldToTileX(worldX + agentOffsetX + agentWidth / 2f);
+        int ty = worldToTileY(worldY + agentOffsetY + agentHeight / 2f);
+        if (!inBounds(tx, ty)) return false;
+        return mask[ty * width + tx];
+    }
+
     /** True if the agent's actual hitbox can stand at this entity origin. */
     public boolean isDestinationClear(float entityX, float entityY) {
         return !collisionMap.rectCollides(entityX + agentOffsetX, entityY + agentOffsetY, agentWidth, agentHeight);
