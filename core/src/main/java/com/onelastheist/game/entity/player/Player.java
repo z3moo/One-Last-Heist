@@ -15,8 +15,8 @@ import com.onelastheist.game.item.Inventory;
 public class Player extends MovableEntity {
     /** World units per second when walking upright. */
     public static final float WALK_SPEED = 360f;
-    /** World units per second when crouched — slower, intended for stealth. */
-    public static final float CROUCH_SPEED = 220f;
+    /** World units per second when crouched — slower, intended for stealth. 15% reduction from the prior 220. */
+    public static final float CROUCH_SPEED = 187f;
 
     private final Inventory inventory = new Inventory();
     private PlayerState state = PlayerState.NORMAL;
