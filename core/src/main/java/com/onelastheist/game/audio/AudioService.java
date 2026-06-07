@@ -210,6 +210,12 @@ public class AudioService implements Disposable {
         }
     }
 
+    /** Current global SFX volume in [0, 1]. */
+    public float getSfxVolume() { return sfxVolume; }
+
+    /** Current music volume in [0, 1]. */
+    public float getMusicVolume() { return musicVolume; }
+
     private float sfxVolumeFor(SfxId id) {
         Float scale = perSfxScale.get(id);
         return sfxVolume * (scale == null ? 1.0f : scale);

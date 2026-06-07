@@ -163,6 +163,8 @@ public class PlayScreen extends ScreenAdapter {
     private final Rectangle resumeBounds = new Rectangle();
     private final Rectangle restartBounds = new Rectangle();
     private final Rectangle menuBounds = new Rectangle();
+    /** Click target for the symmetric BACK TO MENU banner on the operation manual page. */
+    private final Rectangle tutorialBackBounds = new Rectangle();
     private Texture resumeNormalTexture;
     private Texture resumeHoverTexture;
     private Texture resumePressedTexture;
@@ -424,6 +426,7 @@ public class PlayScreen extends ScreenAdapter {
 
     private void updateActivePhase(float delta) {
         if (phase == PlayPhase.TUTORIAL) {
+            if (handleTutorialActions()) return;
             playerController.update(world.getPlayer(), delta);
             clampTutorialPlayer();
             if (world.getPlayer().getX() + ACTOR_CENTER_OFFSET >= START_TRIGGER_X) {
@@ -684,6 +687,35 @@ public class PlayScreen extends ScreenAdapter {
         world.getPlayer().setPosition(x, y);
     }
 
+    /**
+     * Tutorial-phase click + key handler. Catches the BACK TO MENU banner
+     * (mirror of WALK RIGHT TO BEGIN) and the ESC shortcut to bail back to
+     * the title screen without going through pause. Returns {@code true}
+     * when navigation was triggered so the caller can short-circuit the
+     * rest of the tutorial frame.
+     */
+    private boolean handleTutorialActions() {
+        // ESC during the manual screen pops back to main menu directly.
+        // The pause overlay is meaningful during gameplay only.
+        if (Gdx.input.isKeyJustPressed(Input.Keys.ESCAPE)) {
+            if (context != null) context.getAudio().playSfx(SfxId.CLICK_OK);
+            navigator.showMainMenu();
+            return true;
+        }
+        if (!Gdx.input.justTouched()) return false;
+        // Tutorial uses MENU_CAMERA_ZOOM (1.0) so a straight unproject
+        // through the live viewport maps to the same coords used by
+        // tutorialBackBounds.
+        touchPoint.set(Gdx.input.getX(), Gdx.input.getY(), 0f);
+        viewport.unproject(touchPoint);
+        if (tutorialBackBounds.contains(touchPoint.x, touchPoint.y)) {
+            if (context != null) context.getAudio().playSfx(SfxId.CLICK_OK);
+            navigator.showMainMenu();
+            return true;
+        }
+        return false;
+    }
+
     private void handlePauseInput() {
         // Don't let pause stall the ending fade — the fade timer only
         // advances inside updateActivePhase, and the pause overlay would
@@ -701,8 +733,22 @@ public class PlayScreen extends ScreenAdapter {
             return;
         }
 
+        // Click bounds (resume/restart/menu) are laid out using the
+        // zoom-1.0 menu framing inside updateOverlayLayout. During GAME
+        // phase the live camera is still at GAME_CAMERA_ZOOM (0.5) from
+        // the prior frame, so unprojecting through it would map a click
+        // on the visible MENU button to the wrong world coords — and
+        // the click would land on RESTART instead, which is what was
+        // sending the player back to the operation manual when they
+        // expected to return to the main menu.
+        OrthographicCamera camera = (OrthographicCamera) viewport.getCamera();
+        float savedZoom = camera.zoom;
+        camera.zoom = MENU_CAMERA_ZOOM;
+        camera.update();
         touchPoint.set(Gdx.input.getX(), Gdx.input.getY(), 0f);
         viewport.unproject(touchPoint);
+        camera.zoom = savedZoom;
+        camera.update();
 
         if (restartBounds.contains(touchPoint.x, touchPoint.y)) {
             context.getAudio().playSfx(SfxId.CLICK_OK);
@@ -1643,7 +1689,9 @@ public class PlayScreen extends ScreenAdapter {
         shapes.begin(ShapeRenderer.ShapeType.Filled);
         drawTutorialBackdrop();
         for (int i = 0; i < CARD_COUNT; i++) drawCardShape(i);
-        drawContinueHintShape();
+        drawObjectivesPanelShape();
+        drawTutorialBannerShape(true);
+        drawTutorialBannerShape(false);
         shapes.end();
 
         renderer.renderPlayerOnly(delta, camera);
@@ -1652,7 +1700,9 @@ public class PlayScreen extends ScreenAdapter {
         overlayBatch.begin();
         drawTutorialHeading();
         for (int i = 0; i < CARD_COUNT; i++) drawCardText(i);
-        drawContinueHintText();
+        drawObjectivesPanelText();
+        drawTutorialBannerText(true);
+        drawTutorialBannerText(false);
         overlayBatch.end();
 
         if (phase == PlayPhase.FADING_TO_GAME) {
@@ -1664,10 +1714,11 @@ public class PlayScreen extends ScreenAdapter {
         shapes.setColor(0.04f, 0.045f, 0.055f, 1f);
         shapes.rect(0f, 0f, WORLD_WIDTH, WORLD_HEIGHT);
 
-        // Mep vang mong de phan vung tieu de va hint.
+        // Single thin gold rule under the heading. The bottom rule used to
+        // live at y=410 but now lands inside the OBJECTIVES panel, so it's
+        // gone — the panel itself supplies the lower visual anchor.
         shapes.setColor(0.96f, 0.62f, 0.13f, 0.32f);
         shapes.rect(0f, WORLD_HEIGHT - 160f, WORLD_WIDTH, 2f);
-        shapes.rect(0f, 410f, WORLD_WIDTH, 2f);
     }
 
     private void drawCardShape(int index) {
@@ -1769,34 +1820,231 @@ public class PlayScreen extends ScreenAdapter {
     }
 
     private void drawContinueHintShape() {
-        float bannerW = 540f;
-        float bannerH = 70f;
-        float bannerX = WORLD_WIDTH - bannerW - 90f;
-        float bannerY = 320f;
-
-        shapes.setColor(0f, 0f, 0f, 0.55f);
-        shapes.rect(bannerX + 8f, bannerY - 8f, bannerW, bannerH);
-        shapes.setColor(0.95f, 0.62f, 0.13f, 1f);
-        shapes.rect(bannerX, bannerY, bannerW, bannerH);
-        shapes.setColor(0.07f, 0.075f, 0.09f, 1f);
-        shapes.rect(bannerX + 4f, bannerY + 4f, bannerW - 8f, bannerH - 8f);
-
-        // Hai mui ten chevron ben phai.
-        shapes.setColor(0.96f, 0.72f, 0.28f, 1f);
-        float chevY = bannerY + bannerH / 2f;
-        for (int i = 0; i < 2; i++) {
-            float ox = bannerX + bannerW - 76f + i * 22f;
-            shapes.triangle(ox - 16f, chevY + 16f, ox - 16f, chevY - 16f, ox + 4f, chevY);
-        }
+        // Legacy shim — banners are now drawn by drawTutorialBannerShape.
     }
 
     private void drawContinueHintText() {
+        // Legacy shim — see drawTutorialBannerText.
+    }
+
+    // ---- Operation manual: symmetric BACK / WALK RIGHT banners + OBJECTIVES panel.
+    // Both banners share width/height/Y so the layout reads as balanced about
+    // the center axis of the screen.
+
+    private static final float TUTORIAL_BANNER_WIDTH = 540f;
+    private static final float TUTORIAL_BANNER_HEIGHT = 80f;
+    private static final float TUTORIAL_BANNER_Y = 50f;
+    private static final float TUTORIAL_BANNER_SIDE_PADDING = 90f;
+
+    private static final float OBJECTIVES_PANEL_WIDTH = 1280f;
+    private static final float OBJECTIVES_PANEL_HEIGHT = 340f;
+    private static final float OBJECTIVES_PANEL_X =
+        (WORLD_WIDTH - OBJECTIVES_PANEL_WIDTH) / 2f;
+    private static final float OBJECTIVES_PANEL_Y = 175f;
+
+    /**
+     * Draw one of the two bottom banners. {@code leftSide=true} is the
+     * BACK TO MENU banner on the left, {@code leftSide=false} is the
+     * WALK RIGHT TO BEGIN banner on the right. Same shape data so they
+     * read as a matched pair flanking the OBJECTIVES panel.
+     */
+    private void drawTutorialBannerShape(boolean leftSide) {
+        float bannerX = leftSide
+            ? TUTORIAL_BANNER_SIDE_PADDING
+            : WORLD_WIDTH - TUTORIAL_BANNER_WIDTH - TUTORIAL_BANNER_SIDE_PADDING;
+        float bannerY = TUTORIAL_BANNER_Y;
+
+        shapes.setColor(0f, 0f, 0f, 0.55f);
+        shapes.rect(bannerX + 8f, bannerY - 8f, TUTORIAL_BANNER_WIDTH, TUTORIAL_BANNER_HEIGHT);
+        shapes.setColor(0.95f, 0.62f, 0.13f, 1f);
+        shapes.rect(bannerX, bannerY, TUTORIAL_BANNER_WIDTH, TUTORIAL_BANNER_HEIGHT);
+        shapes.setColor(0.07f, 0.075f, 0.09f, 1f);
+        shapes.rect(bannerX + 4f, bannerY + 4f,
+            TUTORIAL_BANNER_WIDTH - 8f, TUTORIAL_BANNER_HEIGHT - 8f);
+
+        // Mirrored chevrons: the right banner points right (forward), the
+        // left banner points left (back to menu).
+        shapes.setColor(0.96f, 0.72f, 0.28f, 1f);
+        float chevY = bannerY + TUTORIAL_BANNER_HEIGHT / 2f;
+        if (leftSide) {
+            for (int i = 0; i < 2; i++) {
+                float ox = bannerX + 76f - i * 22f;
+                shapes.triangle(ox + 16f, chevY + 16f, ox + 16f, chevY - 16f, ox - 4f, chevY);
+            }
+        } else {
+            for (int i = 0; i < 2; i++) {
+                float ox = bannerX + TUTORIAL_BANNER_WIDTH - 76f + i * 22f;
+                shapes.triangle(ox - 16f, chevY + 16f, ox - 16f, chevY - 16f, ox + 4f, chevY);
+            }
+        }
+    }
+
+    private void drawTutorialBannerText(boolean leftSide) {
         Color gold = new Color(1f, 0.8f, 0.3f, 1f);
-        float bannerW = 540f;
-        float bannerH = 70f;
-        float bannerX = WORLD_WIDTH - bannerW - 90f;
-        float bannerY = 320f;
-        drawTextInRect("WALK RIGHT TO BEGIN", bannerX, bannerY, bannerW - 110f, bannerH, 1.15f, gold);
+        float bannerX = leftSide
+            ? TUTORIAL_BANNER_SIDE_PADDING
+            : WORLD_WIDTH - TUTORIAL_BANNER_WIDTH - TUTORIAL_BANNER_SIDE_PADDING;
+        float bannerY = TUTORIAL_BANNER_Y;
+        // Text sits between the chevrons. Reserve ~110wu on the chevron
+        // side so the text never collides with the arrows.
+        float textX = leftSide ? bannerX + 110f : bannerX;
+        float textWidth = TUTORIAL_BANNER_WIDTH - 110f;
+        String label = leftSide ? "BACK TO MENU" : "WALK RIGHT TO BEGIN";
+        drawTextInRect(label, textX, bannerY, textWidth, TUTORIAL_BANNER_HEIGHT, 1.15f, gold);
+    }
+
+    /**
+     * Heist-style ledger panel listing the four objectives. Same chrome as
+     * the credits / pause panels (gold border, brown plank, deep navy
+     * interior) so the manual page reads as one composition.
+     */
+    private void drawObjectivesPanelShape() {
+        float x = OBJECTIVES_PANEL_X;
+        float y = OBJECTIVES_PANEL_Y;
+        float w = OBJECTIVES_PANEL_WIDTH;
+        float h = OBJECTIVES_PANEL_HEIGHT;
+
+        shapes.setColor(0f, 0f, 0f, 0.62f);
+        shapes.rect(x + 14f, y - 14f, w, h);
+        shapes.setColor(0.96f, 0.65f, 0.11f, 1f);
+        shapes.rect(x, y, w, h);
+        shapes.setColor(0.28f, 0.14f, 0.07f, 1f);
+        shapes.rect(x + 12f, y + 12f, w - 24f, h - 24f);
+        shapes.setColor(0.03f, 0.08f, 0.12f, 0.97f);
+        shapes.rect(x + 28f, y + 28f, w - 56f, h - 56f);
+
+        // Header strip and gold dividers above each objective row for a
+        // ledger feel.
+        shapes.setColor(0.95f, 0.62f, 0.13f, 1f);
+        shapes.rect(x + 28f, y + h - 80f, w - 56f, 4f);
+        shapes.rect(x + 28f, y + 36f, w - 56f, 4f);
+
+        // Coin pip at the inner corners of the ledger keeps the heist motif.
+        float coinPad = 50f;
+        float[][] coins = {
+            {x + coinPad, y + h - coinPad},
+            {x + w - coinPad, y + h - coinPad},
+            {x + coinPad, y + coinPad},
+            {x + w - coinPad, y + coinPad}
+        };
+        for (float[] c : coins) {
+            shapes.setColor(0.66f, 0.43f, 0.02f, 1f);
+            shapes.circle(c[0] + 4f, c[1] - 4f, 18f);
+            shapes.setColor(1f, 0.81f, 0.02f, 1f);
+            shapes.circle(c[0], c[1], 18f);
+            shapes.setColor(1f, 0.94f, 0.27f, 1f);
+            shapes.circle(c[0] - 5f, c[1] + 5f, 6f);
+        }
+
+        // Bullet glyphs on the left of each row. ShapeRenderer primitives
+        // are used in place of emoji because the BitmapFont default doesn't
+        // include them; the glyph hints at the objective without taking
+        // extra vertical space.
+        float[] rowYs = objectiveRowCenters();
+        float bulletX = x + 86f;
+        for (int i = 0; i < rowYs.length; i++) {
+            float cy = rowYs[i];
+            switch (i) {
+                case 0: drawBulletCoin(bulletX, cy); break;       // money
+                case 1: drawBulletHouse(bulletX, cy); break;      // rooms
+                case 2: drawBulletPaw(bulletX, cy); break;        // dog
+                case 3: drawBulletDiamond(bulletX, cy); break;    // hidden valuables
+                default: drawBulletDot(bulletX, cy); break;
+            }
+        }
+    }
+
+    private void drawObjectivesPanelText() {
+        Color titleGold = new Color(1f, 0.86f, 0.24f, 1f);
+        Color body = new Color(0.92f, 0.95f, 0.88f, 1f);
+
+        float x = OBJECTIVES_PANEL_X;
+        float y = OBJECTIVES_PANEL_Y;
+        float w = OBJECTIVES_PANEL_WIDTH;
+        float h = OBJECTIVES_PANEL_HEIGHT;
+
+        // Header.
+        drawTextInRect("THIEF'S OBJECTIVE",
+            x + 28f, y + h - 76f, w - 56f, 40f, 1.7f, titleGold);
+
+        String[] lines = {
+            "Collect 360$ before time expires.",
+            "Investigate rooms and interact with objects.",
+            "Avoid being caught by the guard dog.",
+            "Some valuables are hidden in unexpected places."
+        };
+        float[] rowYs = objectiveRowCenters();
+        float rowHeight = (rowYs[0] - rowYs[1]) - 4f;
+        for (int i = 0; i < lines.length; i++) {
+            // Indent past the bullet glyph so all four lines line up.
+            drawTextInRect(lines[i],
+                x + 130f, rowYs[i] - rowHeight / 2f,
+                w - 160f, rowHeight, 1.15f, body);
+        }
+    }
+
+    /**
+     * Vertical center of each objective row. Row strip lives between the
+     * two gold dividers; we space four rows evenly inside it so the panel
+     * reads as a clean ledger no matter how tall the panel becomes.
+     */
+    private float[] objectiveRowCenters() {
+        float y = OBJECTIVES_PANEL_Y;
+        float h = OBJECTIVES_PANEL_HEIGHT;
+        float topDivider = y + h - 80f;
+        float bottomDivider = y + 36f;
+        float rowSpan = topDivider - bottomDivider;
+        float[] centers = new float[4];
+        for (int i = 0; i < 4; i++) {
+            // Bias the centers slightly upward so descenders don't kiss the
+            // divider below — looks tidier than a pure even split.
+            centers[i] = topDivider - rowSpan * (i + 0.5f) / 4f;
+        }
+        return centers;
+    }
+
+    // -- Tiny bullet glyphs (ShapeRenderer; BitmapFont doesn't ship emoji).
+
+    private void drawBulletCoin(float cx, float cy) {
+        shapes.setColor(0.66f, 0.43f, 0.02f, 1f);
+        shapes.circle(cx + 2f, cy - 2f, 14f);
+        shapes.setColor(1f, 0.81f, 0.02f, 1f);
+        shapes.circle(cx, cy, 14f);
+        shapes.setColor(1f, 0.94f, 0.27f, 1f);
+        shapes.circle(cx - 4f, cy + 4f, 4f);
+    }
+
+    private void drawBulletHouse(float cx, float cy) {
+        // Square body + triangle roof, golden silhouette.
+        shapes.setColor(0.96f, 0.65f, 0.11f, 1f);
+        shapes.rect(cx - 12f, cy - 12f, 24f, 18f);
+        shapes.triangle(cx - 14f, cy + 6f, cx + 14f, cy + 6f, cx, cy + 18f);
+        shapes.setColor(0.07f, 0.075f, 0.09f, 1f);
+        shapes.rect(cx - 4f, cy - 12f, 8f, 12f);
+    }
+
+    private void drawBulletPaw(float cx, float cy) {
+        // Pad + four toes — readable as "dog" at small scale.
+        shapes.setColor(0.96f, 0.65f, 0.11f, 1f);
+        shapes.circle(cx, cy - 4f, 9f);
+        shapes.circle(cx - 10f, cy + 4f, 4f);
+        shapes.circle(cx - 4f, cy + 9f, 4f);
+        shapes.circle(cx + 4f, cy + 9f, 4f);
+        shapes.circle(cx + 10f, cy + 4f, 4f);
+    }
+
+    private void drawBulletDiamond(float cx, float cy) {
+        shapes.setColor(0.4f, 0.85f, 1.0f, 1f);
+        // Diamond outline as four triangles around center.
+        shapes.triangle(cx, cy + 14f, cx - 12f, cy, cx + 12f, cy);
+        shapes.triangle(cx, cy - 14f, cx - 12f, cy, cx + 12f, cy);
+        shapes.setColor(0.85f, 0.96f, 1.0f, 1f);
+        shapes.triangle(cx - 4f, cy + 8f, cx + 4f, cy + 8f, cx, cy + 14f);
+    }
+
+    private void drawBulletDot(float cx, float cy) {
+        shapes.setColor(0.96f, 0.65f, 0.11f, 1f);
+        shapes.circle(cx, cy, 6f);
     }
 
     private String cardTitle(int index) {
@@ -1887,6 +2135,17 @@ public class PlayScreen extends ScreenAdapter {
         menuBounds.set(buttonX, menuY, BUTTON_WIDTH, BUTTON_HEIGHT);
         restartBounds.set(buttonX, menuY + BUTTON_HEIGHT + BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT);
         resumeBounds.set(buttonX, restartBounds.y + BUTTON_HEIGHT + BUTTON_GAP, BUTTON_WIDTH, BUTTON_HEIGHT);
+
+        // Operation manual BACK TO MENU banner — matches the geometry in
+        // drawTutorialBannerShape(true). Tutorial camera is at zoom 1.0
+        // centered on (WORLD_WIDTH/2, WORLD_HEIGHT/2), so world-space and
+        // viewport-space coords coincide here.
+        tutorialBackBounds.set(
+            TUTORIAL_BANNER_SIDE_PADDING,
+            TUTORIAL_BANNER_Y,
+            TUTORIAL_BANNER_WIDTH,
+            TUTORIAL_BANNER_HEIGHT
+        );
     }
 
     private void drawPausePanel(float panelX, float panelY) {

@@ -200,8 +200,12 @@ public class MainMenuScreen implements Screen {
             public void changed(ChangeEvent event, Actor actor) {
                 playClickSfx();
                 showCredits = false;
-                statusMessage = "Settings screen is not wired yet";
-                statusTimer = 1.5f;
+                if (navigator != null) {
+                    navigator.showSettings();
+                } else {
+                    statusMessage = "Settings screen is not wired yet";
+                    statusTimer = 1.5f;
+                }
             }
         });
         creditsButton.addListener(new ChangeListener() {

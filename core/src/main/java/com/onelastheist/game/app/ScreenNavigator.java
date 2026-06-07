@@ -6,6 +6,7 @@ import com.onelastheist.game.screen.EndingScreen;
 import com.onelastheist.game.screen.MainMenuScreen;
 import com.onelastheist.game.screen.PauseScreen;
 import com.onelastheist.game.screen.PlayScreen;
+import com.onelastheist.game.screen.SettingsScreen;
 
 /**
  * Centralized screen routing. Every {@code show*} method constructs the target
@@ -25,6 +26,7 @@ public class ScreenNavigator {
     public void showMainMenu() { game.setScreen(new MainMenuScreen(this, context)); }
     public void showPlayScreen() { game.setScreen(new PlayScreen(context, this)); }
     public void showPauseScreen() { game.setScreen(new PauseScreen(this)); }
+    public void showSettings() { game.setScreen(new SettingsScreen(this, context)); }
     public void showEndingScreen(EndingType endingType) {
         game.setScreen(new EndingScreen(this, context, endingType));
     }
