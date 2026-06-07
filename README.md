@@ -102,16 +102,19 @@ A single LibGDX `Game` instance routes between screens through `ScreenNavigator`
 
 ```
 launcher (lwjgl3)
-  -> OneLastHeistGame
-       -> GameContext       shared services
-       -> ScreenNavigator   routes between screens
-            -> MainMenuScreen
-            -> PlayScreen
-                 -> PlayerController     input handling
-                 -> GameWorld            world state
-                 -> WorldRenderer        drawing
-            -> PauseScreen
-            -> EndingScreen
+  └─> OneLastHeistGame (LibGDX Game)
+        ├─> GameContext      // shared services: AssetManager, configs, audio
+        └─> ScreenNavigator  // routes between screens
+              ├─> MainMenuScreen
+              ├─> PlayScreen
+              │     ├─ PlayerController (input → intent)
+              │     ├─ GameWorld       (Player, NPCs, Doors, RoomGraph,
+              │     │                   WorldClock, Objectives, AlarmSystem,
+              │     │                   TiledMap, CollisionMap)
+              │     └─ WorldRenderer   (tile + sprite drawing, multi-pass for
+              │                         overhead occlusion)
+              ├─> PauseScreen
+              └─> EndingScreen
 ```
 
 `GameWorld` owns the player, NPCs, the active TiledMap, derived collision data, doors, the world clock, and the objective tracker. `WorldFactory` constructs it from on-disk maps and seeds the runtime entities. `WorldRenderer` does the actual drawing in three passes: floor, Y-sorted actors and walls, and overhead canopies.
@@ -125,10 +128,6 @@ Maps are authored in [Tiled](https://www.mapeditor.org/) and committed under `as
 - The `Collisions` object layer is the single source of truth for blocking. Every authored rectangle becomes an axis-aligned solid at load time. `CollisionMap` insets each rect by 4 world units to compensate for the slight overdraw artists tend to leave on collision shapes.
 - A foreground layer is drawn after the player so canopies and rooftops occlude the character.
 - Door rectangles are registered as solids at load time, so the player cannot walk through a door without pressing `E`.
-
-## Audio
-
-`AudioService` is a process-wide mixer that lazily loads each clip on first use. Clips that fail to decode through the LibGDX `Sound` backend (typically because they exceed the in-RAM size limit) automatically fall back to the streamed `Music` backend; failures on both backends are cached so a missing or unreadable file logs once and then degrades to silence. Music tracks are exclusive (one at a time); SFX support both one-shots and de-duped looping playback.
 
 ## Contributing notes
 
