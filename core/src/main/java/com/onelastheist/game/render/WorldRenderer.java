@@ -24,6 +24,7 @@ import com.onelastheist.game.ai.HomeOwnerBrain;
 import com.onelastheist.game.entity.base.MovableEntity;
 import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.player.Player;
+import com.onelastheist.game.environment.BodyPartPuzzle;
 import com.onelastheist.game.environment.DroppedMeat;
 import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
@@ -208,6 +209,9 @@ public class WorldRenderer implements Disposable {
     private final Texture coinTexture = loadPixelTexture("items/coin.png");
     private final Texture diamondTexture = loadPixelTexture("items/diamond.png");
     private final Texture newspaperTexture = loadPixelTexture("items/newspaper.png");
+    /** Body-part clue sprites for the side-house question puzzle. */
+    private final Texture armTexture = loadPixelTexture("items/arm.png");
+    private final Texture legTexture = loadPixelTexture("items/leg.png");
     private final List<Animation<TextureRegion>> playerIdle = createAnimations(playerIdleTexture);
     private final List<Animation<TextureRegion>> playerWalk = createAnimations(playerWalkTexture);
     private final List<Animation<TextureRegion>> playerCrouchWalk = createAnimations(playerCrouchTexture, FRAME_DURATION, CROUCH_WALK_STARTS, FRAME_COUNT);
@@ -279,6 +283,24 @@ public class WorldRenderer implements Disposable {
             }
         }
 
+        // Body-part puzzle clues (side-house only) — same top-most pass
+        // idea so the small sprites read clearly over storage furniture.
+        // Pre-solved puzzles draw faded so the player can see at a glance
+        // which clues are still active.
+        List<BodyPartPuzzle> bodyParts = world.getBodyPartPuzzles();
+        if (!bodyParts.isEmpty()) {
+            Batch overlay = mapRenderer.getBatch();
+            overlay.begin();
+            try {
+                for (int i = 0, n = bodyParts.size(); i < n; i++) {
+                    BodyPartPuzzle p = bodyParts.get(i);
+                    drawBodyPart(overlay, p);
+                }
+            } finally {
+                overlay.end();
+            }
+        }
+
         // Vision cone overlay sits above everything in world-space so the
         // player can see exactly where the homeowner is looking. It is the
         // last per-frame draw so it isn't occluded by walls / furniture.
@@ -315,6 +337,8 @@ public class WorldRenderer implements Disposable {
         coinTexture.dispose();
         diamondTexture.dispose();
         newspaperTexture.dispose();
+        armTexture.dispose();
+        legTexture.dispose();
     }
 
     private void refreshIfMapChanged() {
@@ -747,6 +771,24 @@ public class WorldRenderer implements Disposable {
     /** Draw the folded newspaper sprite at world (x, y), centered on its tile. */
     private void drawNewspaper(Batch outputBatch, float x, float y) {
         drawCenteredItem(outputBatch, newspaperTexture, x, y);
+    }
+
+    /**
+     * Draw an arm or leg clue at the puzzle's world position. Solved
+     * puzzles fade to half alpha so the player can see at a glance which
+     * questions are still open. The flash colour around an answered key
+     * is rendered inside the overlay, not here — this draw is purely the
+     * floor sprite.
+     */
+    private void drawBodyPart(Batch outputBatch, BodyPartPuzzle puzzle) {
+        Texture tex = puzzle.getKind() == BodyPartPuzzle.Kind.ARM ? armTexture : legTexture;
+        if (puzzle.isSolved()) {
+            outputBatch.setColor(1f, 1f, 1f, 0.45f);
+        }
+        drawCenteredItem(outputBatch, tex, puzzle.getX(), puzzle.getY());
+        if (puzzle.isSolved()) {
+            outputBatch.setColor(1f, 1f, 1f, 1f);
+        }
     }
 
     /**

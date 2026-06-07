@@ -9,6 +9,7 @@ import com.onelastheist.game.config.BalanceConfig;
 import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.npc.HomeOwner;
 import com.onelastheist.game.entity.player.Player;
+import com.onelastheist.game.environment.BodyPartPuzzle;
 import com.onelastheist.game.environment.DroppedMeat;
 import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
@@ -555,6 +556,46 @@ public class GameWorld implements Disposable {
             if (p.playerInRange(pcx, pcy)) return p;
         }
         return null;
+    }
+    /** Body-part puzzles on the currently-active map. Only the side house has them. */
+    public List<BodyPartPuzzle> getBodyPartPuzzles() {
+        return active == sideHouse && sideHouse != null
+            ? sideHouse.bodyPartPuzzles
+            : Collections.<BodyPartPuzzle>emptyList();
+    }
+    /** First body-part puzzle in player's interact range, or null. */
+    public BodyPartPuzzle findActiveBodyPart() {
+        List<BodyPartPuzzle> list = getBodyPartPuzzles();
+        if (list.isEmpty()) return null;
+        float pcx = player.getX() + player.getHitboxOffsetX() + player.getHitboxWidth() / 2f;
+        float pcy = player.getY() + player.getHitboxOffsetY() + player.getHitboxHeight() / 2f;
+        for (BodyPartPuzzle p : list) {
+            if (p.playerInRange(pcx, pcy)) return p;
+        }
+        return null;
+    }
+    /**
+     * True when every body-part puzzle on the side-house map has been
+     * solved correctly. Drives the hidden WIN1 trigger; the side-house
+     * bundle is loaded lazily, so this is also false until the player has
+     * stepped into the storage at least once.
+     */
+    public boolean areAllBodyPartsSolved() {
+        if (sideHouse == null) return false;
+        List<BodyPartPuzzle> list = sideHouse.bodyPartPuzzles;
+        if (list.isEmpty()) return false;
+        for (BodyPartPuzzle p : list) if (!p.isSolved()) return false;
+        return true;
+    }
+    /**
+     * Deduct {@code seconds} from the world clock and trigger the
+     * white-flash + "-N seconds" notification. Reuses the bite penalty
+     * timer so the existing PlayScreen overlay renders the float-up text
+     * unchanged. Used by the body-part puzzle on a wrong answer.
+     */
+    public void applyTimePenalty(float seconds) {
+        clock.deduct(seconds);
+        biteFlashTimer = balance.biteFlashSeconds;
     }
     /**
      * Award the storage-house key. Called by PlayScreen the moment the

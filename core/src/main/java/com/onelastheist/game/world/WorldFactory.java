@@ -10,6 +10,7 @@ import com.onelastheist.game.config.BalanceConfig;
 import com.onelastheist.game.entity.npc.Dog;
 import com.onelastheist.game.entity.npc.HomeOwner;
 import com.onelastheist.game.entity.player.Player;
+import com.onelastheist.game.environment.BodyPartPuzzle;
 import com.onelastheist.game.environment.KeyPickup;
 import com.onelastheist.game.environment.MeatPickup;
 import com.onelastheist.game.environment.MoneyPickup;
@@ -333,7 +334,19 @@ public class WorldFactory {
         List<Door> doors = createSideHouseDoors();
         registerDoorsAsSolids(collisionMap, doors);
         patchSideHouseCollisionGaps(collisionMap);
-        return new MapBundle.Builder(tiledMap, collisionMap, doors, 1872f, 288f).build();
+        // Body-part puzzle clues. Tile coords from the level designer
+        // converted to world cell-centers: world_x = col*48+24,
+        // world_y = (mapHeight - row - 1)*48 + 24 with mapHeight=40.
+        // Correct answers: 1=A, 2=B, 3=C, 4=C.
+        List<BodyPartPuzzle> bodyParts = new ArrayList<BodyPartPuzzle>(Arrays.asList(
+            new BodyPartPuzzle(BodyPartPuzzle.Kind.LEG, 1, 'A',  744f,  600f),
+            new BodyPartPuzzle(BodyPartPuzzle.Kind.ARM, 2, 'B', 1656f,  744f),
+            new BodyPartPuzzle(BodyPartPuzzle.Kind.LEG, 3, 'C',  744f,  936f),
+            new BodyPartPuzzle(BodyPartPuzzle.Kind.ARM, 4, 'C', 2136f, 1224f)
+        ));
+        return new MapBundle.Builder(tiledMap, collisionMap, doors, 1872f, 288f)
+            .bodyPartPuzzles(bodyParts)
+            .build();
     }
 
     private static void registerDoorsAsSolids(CollisionMap collisionMap, List<Door> doors) {
@@ -567,6 +580,8 @@ public class WorldFactory {
         public final List<Newspaper> newspapers;
         /** Stationary interactive piano puzzles. The main interior has one; others are empty. */
         public final List<PianoPuzzle> pianoPuzzles;
+        /** Body-part question pickups for the hidden-route puzzle. The side house has four; others are empty. */
+        public final List<BodyPartPuzzle> bodyPartPuzzles;
 
         private MapBundle(Builder b) {
             this.tiledMap = b.tiledMap;
@@ -592,6 +607,9 @@ public class WorldFactory {
             this.pianoPuzzles = b.pianoPuzzles == null
                 ? Collections.<PianoPuzzle>emptyList()
                 : Collections.unmodifiableList(b.pianoPuzzles);
+            this.bodyPartPuzzles = b.bodyPartPuzzles == null
+                ? Collections.<BodyPartPuzzle>emptyList()
+                : Collections.unmodifiableList(b.bodyPartPuzzles);
         }
 
         public static final class Builder {
@@ -608,6 +626,7 @@ public class WorldFactory {
             private List<MoneyPickup> moneyPickups;
             private List<Newspaper> newspapers;
             private List<PianoPuzzle> pianoPuzzles;
+            private List<BodyPartPuzzle> bodyPartPuzzles;
 
             public Builder(TiledMap tiledMap, CollisionMap collisionMap, List<Door> doors, float spawnX, float spawnY) {
                 this.tiledMap = tiledMap;
@@ -624,6 +643,7 @@ public class WorldFactory {
             public Builder moneyPickups(List<MoneyPickup> p) { this.moneyPickups = p; return this; }
             public Builder newspapers(List<Newspaper> p) { this.newspapers = p; return this; }
             public Builder pianoPuzzles(List<PianoPuzzle> p) { this.pianoPuzzles = p; return this; }
+            public Builder bodyPartPuzzles(List<BodyPartPuzzle> p) { this.bodyPartPuzzles = p; return this; }
             public MapBundle build() { return new MapBundle(this); }
         }
     }

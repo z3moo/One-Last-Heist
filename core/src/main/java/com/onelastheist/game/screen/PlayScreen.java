@@ -199,6 +199,12 @@ public class PlayScreen extends ScreenAdapter {
     private PianoPuzzle openPiano;
     /** True while the keyboard overlay is open. C/D/E/F/G/A/B play notes; Q closes. */
     private boolean pianoOpen;
+    /** Body-part puzzle currently in interact range, or null. */
+    private com.onelastheist.game.environment.BodyPartPuzzle nearbyBodyPart;
+    /** Body-part puzzle whose question overlay is open, captured at open. */
+    private com.onelastheist.game.environment.BodyPartPuzzle openBodyPart;
+    /** True while the body-part question overlay is open. A/B/C/D answer; Q closes. */
+    private boolean bodyPartOpen;
     /** Resolved ending if {@link PlayPhase#FADING_TO_END} is active. Drives which screen we navigate to once the fade completes. */
     private EndingType pendingEnding;
     /** Resolver instance is stateless; held as a field to avoid per-frame allocation. */
@@ -216,6 +222,8 @@ public class PlayScreen extends ScreenAdapter {
     private Texture hudCoinTexture;
     /** Full-page broadside drawn when the player has an interior newspaper open. */
     private Texture newspaperOpenTexture;
+    /** Body-part question images, index 1..4. The puzzle's questionIndex selects which one to show. */
+    private Texture[] questionTextures;
 
     // Audio state. We compare this-frame state to last-frame state so we can
     // fire one-shot SFX exactly on the transition (e.g. dog bite is "bite
@@ -265,6 +273,12 @@ public class PlayScreen extends ScreenAdapter {
         hudClockTexture = loadTexture("ui/hud/clock.png");
         hudCoinTexture = loadTexture("ui/hud/coin_counter.png");
         newspaperOpenTexture = loadTexture("items/opened.png");
+        // Question images for the body-part puzzle. Index 0 is unused so
+        // the puzzle's 1-based questionIndex maps directly to slot N.
+        questionTextures = new Texture[5];
+        for (int i = 1; i <= 4; i++) {
+            questionTextures[i] = loadTexture("questions/" + i + ".png");
+        }
         // Mouse wheel changes the selected hotbar slot. Set as the screen's
         // input processor — the rest of input goes through Gdx.input polling
         // which doesn't depend on the registered processor, so this doesn't
@@ -278,7 +292,7 @@ public class PlayScreen extends ScreenAdapter {
                 // 0.85-alpha overlays and the floating item-name label
                 // bled through.
                 if (phase != PlayPhase.GAME || paused
-                    || newspaperOpen || pianoOpen
+                    || newspaperOpen || pianoOpen || bodyPartOpen
                     || world.getPlayer().isCaught()) return false;
                 // amountY is positive when the wheel turns DOWN (toward user).
                 // Match a typical hotbar: wheel-down advances forward through
@@ -310,14 +324,17 @@ public class PlayScreen extends ScreenAdapter {
         if (phase == PlayPhase.GAME || phase == PlayPhase.FADING_TO_END) {
             renderer.render(delta, (OrthographicCamera) viewport.getCamera());
             if (phase == PlayPhase.GAME) {
-                if (activeDoor != null && !newspaperOpen && !pianoOpen) {
+                if (activeDoor != null && !newspaperOpen && !pianoOpen && !bodyPartOpen) {
                     drawDoorPrompt((OrthographicCamera) viewport.getCamera(), activeDoor);
                 }
-                if (activeNewspaper != null && !newspaperOpen && !pianoOpen) {
+                if (activeNewspaper != null && !newspaperOpen && !pianoOpen && !bodyPartOpen) {
                     drawNewspaperPrompt((OrthographicCamera) viewport.getCamera(), activeNewspaper);
                 }
-                if (nearbyPiano != null && !pianoOpen && !newspaperOpen) {
+                if (nearbyPiano != null && !pianoOpen && !newspaperOpen && !bodyPartOpen) {
                     drawPianoPrompt((OrthographicCamera) viewport.getCamera(), nearbyPiano);
+                }
+                if (nearbyBodyPart != null && !pianoOpen && !newspaperOpen && !bodyPartOpen) {
+                    drawBodyPartPrompt((OrthographicCamera) viewport.getCamera(), nearbyBodyPart);
                 }
                 drawHotbar((OrthographicCamera) viewport.getCamera());
                 drawHud((OrthographicCamera) viewport.getCamera());
@@ -329,6 +346,9 @@ public class PlayScreen extends ScreenAdapter {
                 }
                 if (pianoOpen && openPiano != null) {
                     drawPianoOverlay((OrthographicCamera) viewport.getCamera(), openPiano);
+                }
+                if (bodyPartOpen && openBodyPart != null) {
+                    drawBodyPartOverlay((OrthographicCamera) viewport.getCamera(), openBodyPart);
                 }
             } else {
                 // FADING_TO_END: dim the world to black so the EndingScreen
@@ -396,6 +416,9 @@ public class PlayScreen extends ScreenAdapter {
         if (hudClockTexture != null) hudClockTexture.dispose();
         if (hudCoinTexture != null) hudCoinTexture.dispose();
         if (newspaperOpenTexture != null) newspaperOpenTexture.dispose();
+        if (questionTextures != null) {
+            for (Texture t : questionTextures) if (t != null) t.dispose();
+        }
         if (tutorialFont != null) tutorialFont.dispose();
     }
 
@@ -442,12 +465,13 @@ public class PlayScreen extends ScreenAdapter {
         // on the keyboard until Q closes it.
         boolean caught = world.getPlayer().isCaught();
         boolean reading = newspaperOpen;
-        if (!caught && !reading && !pianoOpen) {
+        if (!caught && !reading && !pianoOpen && !bodyPartOpen) {
             playerController.update(world.getPlayer(), delta, world.getCollisionMap());
         }
         world.update(delta);
-        // Ending triggers — caught, time over, or escape with enough money.
-        // Once one fires we flip to FADING_TO_END and stop processing
+        // Ending triggers — caught, time over, escape with enough money,
+        // or all four body-part puzzles solved (hidden WIN1 path). Once
+        // one fires we flip to FADING_TO_END and stop processing
         // gameplay input for the rest of this frame.
         if (checkEndingTriggers()) return;
         promptTimer += delta;
@@ -458,13 +482,19 @@ public class PlayScreen extends ScreenAdapter {
         // door check. They live in different rooms anyway.
         activeNewspaper = world.findActiveNewspaper();
         nearbyPiano = world.findActivePiano();
+        nearbyBodyPart = world.findActiveBodyPart();
         // Tick whichever piano is currently relevant — the open one if any
         // (keeps the just-solved flash counting down past walking out of
         // range), otherwise the nearby one for prompt animation.
         PianoPuzzle pianoToTick = openPiano != null ? openPiano : nearbyPiano;
         if (pianoToTick != null) pianoToTick.update(delta);
+        com.onelastheist.game.environment.BodyPartPuzzle bodyToTick =
+            openBodyPart != null ? openBodyPart : nearbyBodyPart;
+        if (bodyToTick != null) bodyToTick.update(delta);
         if (!caught) {
-            if (pianoOpen) {
+            if (bodyPartOpen) {
+                handleBodyPartInput();
+            } else if (pianoOpen) {
                 handlePianoInput();
             } else if (reading) {
                 // While reading: only E (close) is meaningful. Movement,
@@ -488,6 +518,13 @@ public class PlayScreen extends ScreenAdapter {
                 // openPiano until they press Q.
                 openPiano = nearbyPiano;
                 pianoOpen = true;
+            } else if (nearbyBodyPart != null
+                && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
+                // E near a body-part clue opens the question overlay. Same
+                // capture-on-open rule as the piano so leaving interact
+                // range mid-question doesn't NPE the input handler.
+                openBodyPart = nearbyBodyPart;
+                bodyPartOpen = true;
             } else if (activeDoor != null
                 && Gdx.input.isKeyJustPressed(context.getControlConfig().interact)) {
                 triggerDoor(activeDoor);
@@ -496,7 +533,8 @@ public class PlayScreen extends ScreenAdapter {
             // because it's the most common pickup; key second because it's
             // unique; meat last so a stray meat tile under the player can't
             // pre-empt collecting nearby money.
-            if (!reading && !pianoOpen && Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
+            if (!reading && !pianoOpen && !bodyPartOpen
+                && Gdx.input.isKeyJustPressed(context.getControlConfig().collect)) {
                 if (world.tryPickUpMoney()) {
                     Gdx.app.log("PlayScreen", "Picked up money");
                     context.getAudio().playSfx(SfxId.COLLECT_ITEMS);
@@ -511,7 +549,8 @@ public class PlayScreen extends ScreenAdapter {
                 }
             }
             // G: drop a piece of meat at the player's feet. Same approach as F.
-            if (!reading && !pianoOpen && Gdx.input.isKeyJustPressed(context.getControlConfig().dropMeat)) {
+            if (!reading && !pianoOpen && !bodyPartOpen
+                && Gdx.input.isKeyJustPressed(context.getControlConfig().dropMeat)) {
                 if (world.tryDropMeat()) {
                     Gdx.app.log("PlayScreen", "Dropped meat");
                     hotbarLabelTimer = HOTBAR_LABEL_DURATION;
@@ -545,6 +584,12 @@ public class PlayScreen extends ScreenAdapter {
             resolved = EndingType.LOSE;
         } else if (world.getClock().isTimeOver()) {
             resolved = world.getObjectives().hasEnoughMoney() ? EndingType.WIN2 : EndingType.LOSE;
+        } else if (world.areAllBodyPartsSolved()) {
+            // Hidden route: all four body-part questions answered correctly
+            // before the clock runs out. Beats the regular escape-with-cash
+            // win and is checked first so the player gets WIN1 even if they
+            // happen to also be carrying enough money outside the garden.
+            resolved = EndingType.WIN1;
         } else if (world.getObjectives().hasEnoughMoney()
             && world.hasPlayerEnteredHouse()
             && world.isPlayerOutsideGarden()) {
@@ -558,6 +603,8 @@ public class PlayScreen extends ScreenAdapter {
         newspaperOpen = false;
         pianoOpen = false;
         openPiano = null;
+        bodyPartOpen = false;
+        openBodyPart = null;
         // Stop SFX loops AND the gameplay music immediately. Music keeps
         // playing across screen swaps because LibGDX only calls hide() on
         // setScreen, not dispose(); without an explicit stop the InHouse
@@ -594,6 +641,9 @@ public class PlayScreen extends ScreenAdapter {
             nearbyPiano = null;
             openPiano = null;
             pianoOpen = false;
+            nearbyBodyPart = null;
+            openBodyPart = null;
+            bodyPartOpen = false;
             lockedFlashTimer = 0f;
             return;
         }
@@ -605,6 +655,9 @@ public class PlayScreen extends ScreenAdapter {
             nearbyPiano = null;
             openPiano = null;
             pianoOpen = false;
+            nearbyBodyPart = null;
+            openBodyPart = null;
+            bodyPartOpen = false;
             lockedFlashTimer = 0f;
             return;
         }
@@ -616,6 +669,9 @@ public class PlayScreen extends ScreenAdapter {
             nearbyPiano = null;
             openPiano = null;
             pianoOpen = false;
+            nearbyBodyPart = null;
+            openBodyPart = null;
+            bodyPartOpen = false;
             lockedFlashTimer = 0f;
             return;
         }
@@ -1027,6 +1083,181 @@ public class PlayScreen extends ScreenAdapter {
         Color hint = new Color(1f, 0.85f, 0.45f, 0.95f);
         drawTextInRect("Q to close",
             left, bottom + 18f, visibleWidth, 20f, 0.95f, hint);
+        overlayBatch.end();
+    }
+
+    /**
+     * One-frame input handler for the body-part question overlay. A/B/C/D
+     * answer the active question; Q closes. Wrong answers fire a 30-second
+     * time penalty (reusing the bite-flash overlay machinery so the
+     * floating "-30s" text appears on the player). Already-solved puzzles
+     * just flash green again and don't penalise.
+     */
+    private void handleBodyPartInput() {
+        if (Gdx.input.isKeyJustPressed(Input.Keys.Q)) {
+            bodyPartOpen = false;
+            openBodyPart = null;
+            return;
+        }
+        if (openBodyPart == null) {
+            bodyPartOpen = false;
+            return;
+        }
+        char letter = 0;
+        if (Gdx.input.isKeyJustPressed(Input.Keys.A)) letter = 'A';
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.B)) letter = 'B';
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.C)) letter = 'C';
+        else if (Gdx.input.isKeyJustPressed(Input.Keys.D)) letter = 'D';
+        if (letter == 0) return;
+        com.onelastheist.game.environment.BodyPartPuzzle.Result r = openBodyPart.answer(letter);
+        switch (r) {
+            case CORRECT:
+                context.getAudio().playSfx(SfxId.COLLECT_ITEMS);
+                hotbarLabelTimer = HOTBAR_LABEL_DURATION;
+                break;
+            case WRONG:
+                // -30s penalty + bite-flash overlay (the "-30s" floating text
+                // already wired into the renderer reads this state).
+                world.applyTimePenalty(world.getBitePenaltySeconds());
+                context.getAudio().playSfx(SfxId.DOG);
+                break;
+            case ALREADY_SOLVED:
+            default:
+                break;
+        }
+    }
+
+    /**
+     * Floating "E to Read" panel hovering over a body-part clue. Mirrors
+     * {@link #drawNewspaperPrompt} but tints green when the puzzle is
+     * already solved so the player can see at a glance which clues they
+     * still need to answer.
+     */
+    private void drawBodyPartPrompt(OrthographicCamera camera,
+                                    com.onelastheist.game.environment.BodyPartPuzzle puzzle) {
+        float pulsePhase = (promptTimer / PROMPT_PULSE_PERIOD) * MathUtils.PI2;
+        float pulse = 0.5f + 0.5f * (float) Math.sin(pulsePhase);
+        float alpha = 0.65f + 0.35f * pulse;
+
+        float bobPhase = (promptTimer / PROMPT_BOB_PERIOD) * MathUtils.PI2;
+        float bob = (float) Math.sin(bobPhase) * PROMPT_BOB_AMPLITUDE;
+
+        float centerX = puzzle.getX();
+        float baseY = puzzle.getY() + PROMPT_VERTICAL_OFFSET + bob;
+        float panelX = centerX - PROMPT_WIDTH / 2f;
+        float panelY = baseY;
+
+        boolean solved = puzzle.isSolved();
+        Color borderTint = solved ? new Color(0.40f, 0.96f, 0.56f, 1f) : new Color(0.96f, 0.65f, 0.13f, 1f);
+        Color haloTint = solved ? new Color(0.40f, 0.96f, 0.56f, 1f) : new Color(0.96f, 0.62f, 0.13f, 1f);
+        Color labelColor = solved ? new Color(0.62f, 1f, 0.78f, 1f) : new Color(1f, 0.85f, 0.45f, 1f);
+
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+
+        float haloAlpha = 0.18f + 0.32f * pulse;
+        shapes.setColor(haloTint.r, haloTint.g, haloTint.b, haloAlpha);
+        float haloPad = 18f;
+        shapes.rect(panelX - haloPad, panelY - haloPad,
+            PROMPT_WIDTH + haloPad * 2f, PROMPT_HEIGHT + haloPad * 2f);
+        shapes.setColor(0f, 0f, 0f, 0.55f * alpha);
+        shapes.rect(panelX + 8f, panelY - 8f, PROMPT_WIDTH, PROMPT_HEIGHT);
+        shapes.setColor(borderTint.r, borderTint.g, borderTint.b, alpha);
+        shapes.rect(panelX, panelY, PROMPT_WIDTH, PROMPT_HEIGHT);
+        shapes.setColor(0.07f, 0.075f, 0.09f, alpha);
+        shapes.rect(panelX + 4f, panelY + 4f, PROMPT_WIDTH - 8f, PROMPT_HEIGHT - 8f);
+
+        float arrowAlpha = 0.65f + 0.35f * pulse;
+        shapes.setColor(borderTint.r, borderTint.g, borderTint.b, arrowAlpha);
+        float arrowCx = panelX + PROMPT_WIDTH / 2f;
+        float arrowTipY = panelY - 14f;
+        shapes.triangle(arrowCx - 12f, panelY + 2f, arrowCx + 12f, panelY + 2f, arrowCx, arrowTipY);
+
+        float capW = 50f;
+        float capH = 50f;
+        float capX = panelX + 22f;
+        float capY = panelY + (PROMPT_HEIGHT - capH) / 2f;
+        shapes.setColor(0f, 0f, 0f, 0.45f * alpha);
+        shapes.rect(capX + 3f, capY - 4f, capW, capH);
+        shapes.setColor(0.86f, 0.86f, 0.90f, alpha);
+        shapes.rect(capX, capY, capW, capH);
+        shapes.setColor(0.97f, 0.97f, 1.0f, alpha);
+        shapes.rect(capX + 5f, capY + 7f, capW - 10f, capH - 12f);
+        shapes.setColor(0.55f, 0.55f, 0.60f, alpha);
+        shapes.rect(capX + 4f, capY + 4f, capW - 8f, 5f);
+        shapes.end();
+
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        Color keyTextColor = new Color(0.10f, 0.10f, 0.12f, alpha);
+        labelColor.a = alpha;
+        drawTextInRect("E", capX, capY, capW, capH, 1.2f, keyTextColor);
+        float labelX = capX + capW + 16f;
+        float labelW = panelX + PROMPT_WIDTH - labelX - 16f;
+        drawTextInRect(solved ? "ANSWERED" : "EXAMINE", labelX, panelY, labelW, PROMPT_HEIGHT, 1.0f, labelColor);
+        overlayBatch.end();
+    }
+
+    /**
+     * Fullscreen body-part question overlay. Shows the question image
+     * fit-clamped to the visible viewport, plus the recent-answer flash
+     * (green for correct, red for wrong) and a Q hint. The image itself
+     * carries the question text and the four answer letters; we only
+     * draw the chrome around it and the answer feedback.
+     */
+    private void drawBodyPartOverlay(OrthographicCamera camera,
+                                     com.onelastheist.game.environment.BodyPartPuzzle puzzle) {
+        float visibleWidth = camera.viewportWidth * camera.zoom;
+        float visibleHeight = camera.viewportHeight * camera.zoom;
+        float left = getCameraLeft(camera);
+        float bottom = getCameraBottom(camera);
+
+        // Backdrop tinted by the most recent answer's flash. Green for
+        // correct, red for wrong; both fade out via the puzzle's timer.
+        float flash = puzzle.isFlashing() ? puzzle.getFlashStrength() : 0f;
+        boolean correct = puzzle.isFlashCorrect();
+        float r = 0.07f + (correct ? 0f : 0.40f * flash);
+        float g = 0.07f + (correct ? 0.30f * flash : 0f);
+        float b = 0.10f;
+        shapes.setProjectionMatrix(camera.combined);
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(r, g, b, 0.85f);
+        shapes.rect(left, bottom, visibleWidth, visibleHeight);
+        shapes.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+
+        int idx = puzzle.getQuestionIndex();
+        Texture art = (questionTextures != null && idx >= 1 && idx < questionTextures.length)
+            ? questionTextures[idx] : null;
+        if (art != null) {
+            float maxH = visibleHeight * 0.82f;
+            float maxW = visibleWidth * 0.70f;
+            float scale = Math.min(maxH / art.getHeight(), maxW / art.getWidth());
+            float drawW = art.getWidth() * scale;
+            float drawH = art.getHeight() * scale;
+            float drawX = left + (visibleWidth - drawW) / 2f;
+            float drawY = bottom + (visibleHeight - drawH) / 2f;
+            overlayBatch.setProjectionMatrix(camera.combined);
+            overlayBatch.begin();
+            overlayBatch.setColor(Color.WHITE);
+            overlayBatch.draw(art, drawX, drawY, drawW, drawH);
+            overlayBatch.end();
+        }
+
+        // Hint strip at the bottom. Different copy for already-answered
+        // puzzles so a player revisiting a solved clue doesn't think they
+        // still need to act on it.
+        overlayBatch.setProjectionMatrix(camera.combined);
+        overlayBatch.begin();
+        Color hint = new Color(1f, 0.85f, 0.45f, 0.95f);
+        String text = puzzle.isSolved()
+            ? "Already answered.  Q to close"
+            : "Press A / B / C / D to answer.  Q to close";
+        drawTextInRect(text, left, bottom + 18f, visibleWidth, 20f, 0.95f, hint);
         overlayBatch.end();
     }
 
@@ -1718,6 +1949,7 @@ public class PlayScreen extends ScreenAdapter {
         boolean playerLoud = !world.getPlayer().isCaught()
             && !newspaperOpen
             && !pianoOpen
+            && !bodyPartOpen
             && world.getPlayer().isMakingNoise();
         audio.setLoop(SfxId.FOOTSTEPS_THIEF, playerLoud);
 
