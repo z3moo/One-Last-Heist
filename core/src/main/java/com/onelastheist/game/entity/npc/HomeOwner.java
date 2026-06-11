@@ -1,7 +1,6 @@
 package com.onelastheist.game.entity.npc;
 
 import com.onelastheist.game.entity.base.MovableEntity;
-import com.onelastheist.game.trap.AlarmEvent;
 
 /**
  * The homeowner NPC ("the neighbour"). Returns to the house in the final
@@ -18,8 +17,6 @@ public class HomeOwner extends MovableEntity {
     /** True once the homeowner has reached the front door and entered the house. */
     private boolean onInterior;
 
-    /** Wakes the homeowner up so the AI brain switches to its search routine. */
-    public void reactToAlarm(AlarmEvent event) { state = NpcState.INVESTIGATING; }
     public NpcState getState() { return state; }
     public void setState(NpcState state) { this.state = state; }
     public boolean isOnInterior() { return onInterior; }

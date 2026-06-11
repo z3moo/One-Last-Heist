@@ -1,7 +1,6 @@
 package com.onelastheist.game.environment;
 
 import com.onelastheist.game.entity.base.Entity;
-import com.onelastheist.game.interaction.Collectible;
 import com.onelastheist.game.item.Inventory;
 import com.onelastheist.game.item.MoneyItem;
 
@@ -14,7 +13,7 @@ import com.onelastheist.game.item.MoneyItem;
  * <p>The bob is purely visual — the entity's world position never moves,
  * so collision and pickup-distance checks remain stable.
  */
-public class MoneyPickup extends Entity implements Collectible {
+public class MoneyPickup extends Entity {
     /** Whether this pickup represents a coin or a diamond — drives sprite + value. */
     public enum Kind { COIN, DIAMOND }
 
@@ -37,7 +36,6 @@ public class MoneyPickup extends Entity implements Collectible {
     public int getValue() { return money.getValue(); }
     public boolean isCollected() { return collected; }
 
-    @Override
     public void collectInto(Inventory inventory) {
         if (collected) return;
         inventory.add(money);

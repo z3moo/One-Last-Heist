@@ -21,7 +21,6 @@ import com.onelastheist.game.item.Item;
 import com.onelastheist.game.item.ItemType;
 import com.onelastheist.game.item.Meat;
 import com.onelastheist.game.item.MoneyItem;
-import com.onelastheist.game.trap.AlarmSystem;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,7 +29,7 @@ import java.util.List;
 
 /**
  * Runtime model of the active heist. Bundles every long-lived gameplay object
- * — player, NPCs, rooms, clock, objectives, alarm system, the active TiledMap,
+ * — player, NPCs, clock, objectives, the active TiledMap,
  * its derived collision data, and the door definitions — behind a single handle
  * that screens and renderers can consume.
  *
@@ -55,10 +54,8 @@ public class GameWorld implements Disposable {
     private final Player player;
     private final HomeOwner homeOwner;
     private final Dog dog;
-    private final RoomGraph roomGraph;
     private final WorldClock clock;
     private final ObjectiveTracker objectives;
-    private final AlarmSystem alarmSystem;
 
     private WorldFactory.MapBundle exterior;
     private WorldFactory.MapBundle interior;
@@ -103,17 +100,15 @@ public class GameWorld implements Disposable {
     private float biteFlashTimer;
 
     public GameWorld(WorldFactory factory, BalanceConfig balance, Player player, HomeOwner homeOwner, Dog dog,
-                     RoomGraph roomGraph, WorldClock clock, ObjectiveTracker objectives,
-                     AlarmSystem alarmSystem, WorldFactory.MapBundle exterior) {
+                     WorldClock clock, ObjectiveTracker objectives,
+                     WorldFactory.MapBundle exterior) {
         this.factory = factory;
         this.balance = balance;
         this.player = player;
         this.homeOwner = homeOwner;
         this.dog = dog;
-        this.roomGraph = roomGraph;
         this.clock = clock;
         this.objectives = objectives;
-        this.alarmSystem = alarmSystem;
         this.exterior = exterior;
         this.active = exterior;
         // Money on the exterior is live from spawn so the player can grab a
@@ -514,10 +509,8 @@ public class GameWorld implements Disposable {
     public Player getPlayer() { return player; }
     public HomeOwner getHomeOwner() { return homeOwner; }
     public Dog getDog() { return dog; }
-    public RoomGraph getRoomGraph() { return roomGraph; }
     public WorldClock getClock() { return clock; }
     public ObjectiveTracker getObjectives() { return objectives; }
-    public AlarmSystem getAlarmSystem() { return alarmSystem; }
     public TiledMap getTiledMap() { return active.tiledMap; }
     public CollisionMap getCollisionMap() { return active.collisionMap; }
     public List<Door> getDoors() { return active.doors == null ? Collections.<Door>emptyList() : active.doors; }

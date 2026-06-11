@@ -18,7 +18,6 @@ import com.onelastheist.game.environment.Newspaper;
 import com.onelastheist.game.environment.PianoPuzzle;
 import com.onelastheist.game.item.ItemFactory;
 import com.onelastheist.game.item.MoneyItem;
-import com.onelastheist.game.trap.AlarmSystem;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -181,10 +180,8 @@ public class WorldFactory {
             player,
             homeOwner,
             dog,
-            RoomGraph.createMainHouseGraph(),
             new WorldClock(balance.mainMapTimeSeconds),
             new ObjectiveTracker(balance.targetMoney),
-            new AlarmSystem(),
             exterior
         );
     }

@@ -1,7 +1,6 @@
 package com.onelastheist.game.environment;
 
 import com.onelastheist.game.entity.base.Entity;
-import com.onelastheist.game.interaction.Collectible;
 import com.onelastheist.game.item.Inventory;
 import com.onelastheist.game.item.Meat;
 
@@ -15,7 +14,7 @@ import com.onelastheist.game.item.Meat;
  * <p>Splitting the two avoids a "dog beelines for the meat the player just
  * walked past" failure mode on entry.
  */
-public class MeatPickup extends Entity implements Collectible {
+public class MeatPickup extends Entity {
     private final Meat meat;
     private boolean collected;
 
@@ -27,7 +26,6 @@ public class MeatPickup extends Entity implements Collectible {
     public Meat getMeat() { return meat; }
     public boolean isCollected() { return collected; }
 
-    @Override
     public void collectInto(Inventory inventory) {
         if (collected) return;
         inventory.add(meat);
